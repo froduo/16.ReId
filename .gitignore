@@ -1,0 +1,114 @@
+# ============================================================
+# 16.ReId — HX-CCD23 人员检测 / ReID 工程
+# 仅提交源码、配置、脚本与文档；排除构建产物、模型权重、采集数据与运行日志。
+# ============================================================
+
+# ----- 构建符号 / 目标文件 -----
+*.o
+*.obj
+*.lo
+*.o.d
+*.d
+*.so
+*.so.*
+*.a
+*.dylib
+*.dll
+*.lib
+*.exe
+
+# ----- qmake / moc / uic 生成物 -----
+Makefile
+Makefile.*
+.qmake.stash
+.qmake.cache
+*.pro.user
+*.pro.user.*
+.build_number
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+object_script.*
+
+# ----- CMake 生成物 -----
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeFiles.txt
+
+# ----- 构建目录（各构建/部署目录） -----
+build-*/
+build/
+
+# ----- 模型 / 权重（体积大，可用导出脚本重建，不入库） -----
+model/
+**/model/
+*.engine
+*.onnx
+*.pt
+*.pth
+*.wts
+*.caffemodel
+*.pb
+
+# ----- 采集数据 / 图像 / 视频 -----
+datasets/
+captured_images/
+head image/
+save_images/
+save_images_test/
+trip_data/
+visitor_log/
+uplink_spool/
+verify_out/
+*.mp4
+*.avi
+*.mkv
+*.mov
+
+# ----- 运行日志 / 输出 -----
+logs/
+Log/
+runs/
+*.log
+
+# ----- 数据库 -----
+*.db
+*.sqlite
+*.sqlite3
+
+# ----- 第三方 SDK（含示例、二进制、图片，非本项目核心代码，整体排除） -----
+third_party/
+**/third_party/
+
+# ----- 产品手册 / 协议 PDF（非代码，按需再纳入） -----
+*.pdf
+
+# ----- 测试编译出的可执行文件（保留 .cpp 源码） -----
+CameraViewer_orbbec/tests/test_ob
+CameraViewer_orbbec/tests/test_align
+CameraViewer_orbbec/tests/ob_info
+CameraViewer_orbbec/tests/test_source
+
+# ----- 编译产物二进制（无扩展名，位于源码根） -----
+/offline_clip_check
+/offline_clip_check_asan
+CameraViewer/CameraViewer
+CameraViewer_orbbec/CameraViewer_orbbec
+CameraViewer_dongqia/CameraViewer_dongqia
+
+# ----- 编辑器 / 系统 -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ----- Python 缓存 -----
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
