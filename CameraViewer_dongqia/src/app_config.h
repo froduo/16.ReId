@@ -11,8 +11,12 @@ struct AppConfig {
     QString cameraUser = "admin";
     QString cameraPass = "admin123";
     int cameraPort = 8554;
-    // 完整 RTSP URL（可手动覆盖）
+    // 完整 RTSP URL（默认由 IP/端口/用户名/密码 自动派生，见 rebuildRtspUrl）
     QString rtspUrl = "rtsp://192.168.99.10:8554/live/camera";
+    // RTSP URL 是否由用户「手动指定」：
+    //   false（默认）—— URL 始终由 IP/端口/用户名/密码 派生，保证「改 IP 即生效」；
+    //   true          —— 使用上面的自定义 rtspUrl，忽略 IP 等参数（高级用法）。
+    bool cameraRtspManual = false;
 
     // 主界面标题
     QString windowTitle = "HX-CCD23 人员检测 ReID 系统";
@@ -80,6 +84,7 @@ struct AppConfig {
         s.setValue("Pass", cameraPass);
         s.setValue("Port", cameraPort);
         s.setValue("RTSP_URL", rtspUrl);
+        s.setValue("RTSP_Manual", cameraRtspManual);
         s.endGroup();
 
         // 显示设置
@@ -151,8 +156,16 @@ struct AppConfig {
         cameraUser = s.value("Camera/User", "admin").toString();
         cameraPass = s.value("Camera/Pass", "admin123").toString();
         cameraPort = s.value("Camera/Port", 8554).toInt();
-        rtspUrl = s.value("Camera/RTSP_URL",
-            "rtsp://192.168.99.10:8554/live/camera").toString();
+        // 是否手动指定 RTSP URL（缺省 false → 以相机 IP/端口为唯一事实来源）
+        cameraRtspManual = s.value("Camera/RTSP_Manual", false).toBool();
+        rtspUrl = s.value("Camera/RTSP_URL", QString()).toString();
+        // 关键修复：默认始终按「相机 IP + 端口 + 用户名 + 密码」重建 RTSP URL，
+        // 避免历史 config.ini 中残留的旧 RTSP_URL 覆盖用户新配置的相机 IP，
+        // 导致「改了 IP 但启动相机仍连旧地址」。仅当用户显式开启手动指定时才沿用自定义 URL。
+        if (!cameraRtspManual || rtspUrl.isEmpty()) {
+            rebuildRtspUrl();
+            cameraRtspManual = false;
+        }
 
         // 显示设置
         windowTitle = s.value("Display/WindowTitle", "HX-CCD23 人员检测 ReID 系统").toString();
@@ -203,11 +216,14 @@ struct AppConfig {
         uplinkUtcOffsetSeconds = s.value("Uplink/UtcOffsetSeconds", 28800).toInt();
     }
 
-    /// 根据 IP/User/Pass/Port 重建 RTSP URL
-    void rebuildRtspUrl() {
-        rtspUrl = QString("rtsp://%1:%2@%3:%4/live/camera")
+    /// 根据 IP/User/Pass/Port 生成 RTSP URL（不修改成员变量）
+    QString derivedRtspUrl() const {
+        return QString("rtsp://%1:%2@%3:%4/live/camera")
             .arg(cameraUser, cameraPass, cameraIP).arg(cameraPort);
     }
+
+    /// 根据 IP/User/Pass/Port 重建 RTSP URL
+    void rebuildRtspUrl() { rtspUrl = derivedRtspUrl(); }
 };
 
 #endif // APP_CONFIG_H

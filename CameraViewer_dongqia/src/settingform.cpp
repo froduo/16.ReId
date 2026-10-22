@@ -32,6 +32,8 @@ SettingForm::SettingForm(const AppConfig &config, QWidget *parent)
     ui->edit_cameraPass->setText(m_config.cameraPass);
     ui->spin_cameraPort->setValue(m_config.cameraPort);
     ui->edit_rtspUrl->setText(m_config.rtspUrl);
+    // 配置为手动指定 URL 时，视作“已手动编辑”，避免 IP 联动覆盖自定义地址
+    m_urlUserEdited = m_config.cameraRtspManual;
 
     // ===== 推理设置 =====
     ui->check_enableInference->setChecked(m_config.enableInference);
@@ -61,6 +63,14 @@ SettingForm::SettingForm(const AppConfig &config, QWidget *parent)
     connect(ui->btn_browseSavePath, &QPushButton::clicked, this, &SettingForm::onBrowseSavePath);
     connect(ui->btn_browseReidSavePath, &QPushButton::clicked, this, &SettingForm::onBrowseReidSavePath);
     connect(ui->btn_rebuildUrl, &QPushButton::clicked, this, &SettingForm::onRebuildRtspUrl);
+    // 相机 IP/端口/用户名/密码 任一变更 → 联动刷新 RTSP URL（保证「改 IP 即生效」）
+    connect(ui->edit_cameraIP, &QLineEdit::textChanged, this, &SettingForm::syncRtspUrlFromFields);
+    connect(ui->edit_cameraUser, &QLineEdit::textChanged, this, &SettingForm::syncRtspUrlFromFields);
+    connect(ui->edit_cameraPass, &QLineEdit::textChanged, this, &SettingForm::syncRtspUrlFromFields);
+    connect(ui->spin_cameraPort, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &SettingForm::syncRtspUrlFromFields);
+    // 用户直接编辑 RTSP URL 字段 → 记为手动指定（尊重自定义地址）
+    connect(ui->edit_rtspUrl, &QLineEdit::textEdited, this, &SettingForm::onRtspUrlEdited);
 
     LOG_INFO("[SettingForm] Settings dialog opened");
 }
@@ -84,8 +94,13 @@ void SettingForm::onAccept()
     m_config.cameraPort = ui->spin_cameraPort->value();
     m_config.rtspUrl = ui->edit_rtspUrl->text().trimmed();
 
-    // 如果 RTSP URL 为空，自动生成
-    if (m_config.rtspUrl.isEmpty()) {
+    // 关键修复：默认以「相机 IP + 端口 + 用户名 + 密码」为唯一事实来源，收敛 RTSP URL，
+    // 确保用户仅修改 IP 时相机也会连接新地址（旧逻辑会沿用对话框里预填的旧 URL）。
+    // 仅当用户在本次会话「手动编辑」了 URL 字段且非空时，才按自定义地址处理。
+    if (m_urlUserEdited && !m_config.rtspUrl.isEmpty()) {
+        m_config.cameraRtspManual = true;
+    } else {
+        m_config.cameraRtspManual = false;
         m_config.rebuildRtspUrl();
     }
 
@@ -166,6 +181,9 @@ void SettingForm::onBrowseReidSavePath()
 
 void SettingForm::onRebuildRtspUrl()
 {
+    // 恢复为“由 IP/端口等自动生成”模式
+    m_urlUserEdited = false;
+    m_config.cameraRtspManual = false;
     m_config.cameraIP = ui->edit_cameraIP->text().trimmed();
     m_config.cameraUser = ui->edit_cameraUser->text().trimmed();
     m_config.cameraPass = ui->edit_cameraPass->text().trimmed();
@@ -174,4 +192,21 @@ void SettingForm::onRebuildRtspUrl()
     ui->edit_rtspUrl->setText(m_config.rtspUrl);
 
     LOG_INFO("[SettingForm] RTSP URL rebuilt: " + m_config.rtspUrl);
+}
+
+void SettingForm::syncRtspUrlFromFields()
+{
+    // IP/端口/用户名/密码 变更 → 联动刷新 URL 字段。
+    // 若用户已手动编辑 URL，则尊重其自定义地址，不覆盖。
+    if (m_urlUserEdited) return;
+    m_config.cameraIP = ui->edit_cameraIP->text().trimmed();
+    m_config.cameraUser = ui->edit_cameraUser->text().trimmed();
+    m_config.cameraPass = ui->edit_cameraPass->text().trimmed();
+    m_config.cameraPort = ui->spin_cameraPort->value();
+    ui->edit_rtspUrl->setText(m_config.derivedRtspUrl());
+}
+
+void SettingForm::onRtspUrlEdited()
+{
+    m_urlUserEdited = true;
 }
