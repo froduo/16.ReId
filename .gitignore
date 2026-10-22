@@ -112,3 +112,9 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+
+# ----- 乘客版现场录像/训练数据集（体积大，不入库） -----
+passenger_videos/
+passenger_dataset/
+passenger_dataset_all/
+passenger_clips/
