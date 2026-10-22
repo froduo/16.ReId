@@ -185,6 +185,71 @@
 
 ## 📅 开发日志 (Development Log)
 
+### 2026-10-22（HX-CCD23 · ReID 目录全图比对 + 换号续接改造，准确率优先）
+- 需求：把「下车乘客身份确认」从实时台账比对升级为「上/下车目录全图深度比对」，准确率优先、
+  允许后台异步比对（不要求实时）；同时解决实时画面中「同一人被拆成多个编号 / 两个框」的问题。
+- 核心改动：
+  1. 新增 `personfolder.{h,cpp}` + `foldermatchworker.{h,cpp}`（新链路，默认）：乘客一出现即分配
+     `person_N` 并持续保存裁剪原图与整帧；上车登记目录进候选集 `m_boardFolders`，下车时对该目录
+     之前、未匹配且停留 ≥ 30s 的上车目录做「全目录 OSNet 512 维 best-avg 余弦比对」，
+     `matched = bestSim >= reidFolderMatchThreshold(0.60)`，并以 `margin = bestSim - secondSim` 衡量置信度。
+  2. 换号/续接规则改造：取消「穿越完成 → 3 帧后换号」，改为「**遇到新乘客出现时才换号**」；
+     时间相邻（≤5s）+ ReID 相似度高的新乘客**续接原编号**（`PersonFolder::reusePerson`），
+     避免同一乘客跨 track 被拆成多个 `person_N`（修复「同一人两个框/两个编号」）。
+  3. 门线防误判（`zonemonitor`）：新增起始侧约束、同方向重复穿越冷却（30s）、`resetTracks()` 与
+     `setCounters()`（视频跳帧回退重检 / 重启后计数恢复）。
+  4. 深度 ReID GPU 加速：新增 `trt_reid.{h,cpp}`（TensorRT OSNet），`reiddeep` 后端优先级
+     TensorRT(GPU) → OpenCV-CUDA → CPU。
+  5. Web 状态服务：新增 `statuswebserver.{h,cpp}`，手机端可查看上下车状态。
+  6. 俯视场景检测召回：置信度阈值 0.45→0.30、宽高比 [0.12,1.00]→[0.35,3.00]。
+  7. RTSP URL 修复：默认由「IP/端口/用户名/密码」派生，保证「改 IP 即生效」。
+  8. 相机健壮性：FFmpeg 读取/打开超时 + 新增本地视频文件离线检测（`openVideoFile`）。
+- 文档：新增 `CameraViewer/docs/乘客重识别(ReID)匹配算法原理.md`。
+- 构建：`build-CameraViewer-Desktop-Debug`（qmake6 + make）通过，产物 **v1.1.263**（2026-10-22 11:59）。
+
+### 2026-10-13（HX-CCD23 · 推理/识别 GPU(TensorRT) 加速，降低 CPU）
+- 需求：把「推理识别」中开销大的部分改为 GPU(TensorRT) 执行，降低 CPU 占用、让实时推理更流畅，
+  且不影响主界面显示（并行进行）。
+- 勘察结论：
+  - 检测已是 TensorRT（GPU），单帧约 10~16ms；真正压在 CPU 上的是**深度 ReID(OSNet) 前向**
+    （`reiddeep.cpp` 原先强制 `DNN_TARGET_CPU`），以及 `trt_yolo.cpp` 预处理里
+    640×640×3 的**逐像素 HWC→CHW 手工重排**循环。
+  - 实测本机 OpenCV 4.8 虽编译了 CUDA/cuDNN，但仅含 `arch=sm_61`，而本机 GPU 为 RTX2060(sm_75)，
+    OpenCV `DNN_BACKEND_CUDA` 直接报 `No CUDA support ... CUDA_ARCH`。故 OpenCV-CUDA 路径不可用，
+    必须走 TensorRT（已在本机 sm_75 上验证成功）。
+- 改动：
+  - 新增 `src/trt_reid.{h,cpp}`：OSNet 的 TensorRT 推理封装。优先加载缓存引擎
+    `*.engine`，缺失时用 `nvonnxparser` **在运行时从 ONNX 构建引擎**（针对本机 GPU 架构，支持 fp16）
+    并缓存，输入 256×128→输出 1×512（GAP+L2 归一化），与手工特征口径一致。
+  - `reiddeep.{h,cpp}`：后端优先级改为 **TensorRT(GPU) → OpenCV-CUDA(GPU) → CPU**（自动回退），
+    `embed()` 命中 TensorRT 时走 GPU；新增 `backendName()` 与析构释放。
+  - `trt_yolo.cpp`：检测预处理 HWC→CHW 改用 `cv::dnn::blobFromImage`（消除逐像素循环），降检测线程 CPU。
+  - `app_config.h`：新增 `ReID/DeepUseCuda`（默认 true）开关；`mainwindow` 注入并记录生效后端。
+  - `CameraViewer.pro`：加入 `trt_reid` 源文件；并复制 OSNet 引擎到构建输出 model/。
+  - 预构建引擎：`model/osnet_x1_0_head_finetuned.engine`（10.6MB，sm_75/fp16，输入 `images`[1,3,256,128]、
+    输出 `features`[1,512,16,8]），首次启动直接加载、无需现场构建。
+- 验证：`build-CameraViewer-Desktop-Debug`（qmake6 + make）通过；产物 **v1.1.182**。
+  既有部署的 regions.json / 配置无回归（ReID 未启用时 DeepReID 不加载）。
+
+### 2026-10-13（HX-CCD23 · 上下车方向语义反转）
+- 需求：相机装反 / 视角变化，重新定义门线方向语义 —— **A→B（从上往下）= 下车；B→A（从下往上）= 上车**。
+- 核心：`zonemonitor.cpp` 门线穿越判定取反
+  `boarding = (line.entry==TopToBottom) ? bToA : aToB`（原为 `aToB : bToA`）；
+  默认 `TopToBottom` 即「从上往下=下车」。四层恢复机制（L1实时/L2惯性/L3拼接/L4兜底）与
+  `entryDirection==BottomToTop` 的取反逻辑不变，仅语义镜像。
+- 同步改动：
+  - `regionmanager.h`：`EntryDirection` 枚举止/注释与默认值改为「从上往下(A→B)=下车」。
+  - `offlinedetectform.cpp/.h`：方向判定注释、上/下车事件标签
+    （`上车 ↑(从下往上)` / `下车 ↓(从上往下)`）、连续检测结论文案、
+    宽松方向兜底（`bestDy<0` ⇒ 上车）、门线方向注释。
+  - `mainwindow.cpp`：上/下车日志详情、`detectDirectionalEntry` 入口判定取反、
+    访客表列注释、门线绘制标签 `DOOR 下车↓ / DOOR 上车↑`、绘制引导文案。
+  - `mainwindow.ui`：方向下拉框标签「进入方向:」→「下车方向:」，
+    选项文案改为「从上往下 ↓（下车）」/「从下往上 ↑（下车）」。
+  - `zonemonitor.h`、`visitorlog.h`、`passengerbook.h`、`overlaytext.h` 相关注释。
+- 构建：`build-CameraViewer-Desktop-Debug`（qmake6 + make）通过，产物 **v1.1.178**（2026-10-13 16:53）。
+- 说明：已部署的 `regions.json`（`entryDirection=TopToBottom`）**无需改动**即获得反转后的语义。
+
 ### 2026-10-08（CameraViewer_orbbec · Orbbec Gemini 335 适配分支）
 - 11:33–11:39 - 由 RTSP 版派生 `CameraViewer_orbbec`：新增 `OrbbecSource`（OrbbecSDK v2，
   彩色 BGR + 深度 mm、D2C 对齐），`CameraController` 支持 `openOrbbec()/grabFrames()`，
@@ -281,5 +346,5 @@ CameraViewer/
 
 ---
 
-> **最后更新**: 2026-10-08 15:44 CST
-> **当前版本**: v1.1.7（CameraViewer_orbbec）
+> **最后更新**: 2026-10-22 12:00 CST
+> **当前版本**: v1.1.263（CameraViewer / HX-CCD23）
