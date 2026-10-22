@@ -1,8 +1,11 @@
 #include "reiddeep.h"
+#include "trt_reid.h"
+#include "trt_yolo.h"
 #include "logger.h"
 
 #include <algorithm>
 #include <vector>
+#include <exception>
 
 // OSNet 输入规格与 ImageNet 归一化
 static constexpr int IN_W = 128;
@@ -12,6 +15,14 @@ static const float STD[3]  = {0.229f, 0.224f, 0.225f};
 
 DeepReID::DeepReID()
 {
+}
+
+DeepReID::~DeepReID()
+{
+    delete m_trt;
+    m_trt = nullptr;
+    delete m_trtLogger;
+    m_trtLogger = nullptr;
 }
 
 bool DeepReID::load(const QString &onnxPath)
@@ -38,16 +49,63 @@ bool DeepReID::load(const QString &onnxPath)
         return false;
     }
 
-    // OpenCV DNN 后端：优先 CUDA（若可用），否则 CPU
-    try {
-        m_net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
-        m_net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-    } catch (...) {
+    // ===== 后端选择：TensorRT(GPU) → OpenCV-CUDA(GPU) → CPU =====
+    // OSNet 每帧对每个乘客做一次前向，是本工程「识别」侧最大的 CPU 开销。
+    // 优先走 TensorRT（针对本机 GPU 架构构建，sm_75 等均可用），
+    // 其次 OpenCV DNN CUDA（部分环境 CUDA 架构不匹配会失败），最后回退 CPU。
+    m_cudaActive = false;
+    m_backend = QStringLiteral("CPU");
+
+    if (m_preferCuda) {
+        try {
+            if (!m_trtLogger) m_trtLogger = new TrtLogger();
+            m_trt = new TrtReid(onnxPath.toStdString(), *m_trtLogger, /*preferFp16=*/true);
+            if (m_trt && m_trt->ready()) {
+                m_backend = QStringLiteral("TensorRT(GPU)");
+            } else {
+                delete m_trt; m_trt = nullptr;
+            }
+        } catch (const std::exception &e) {
+            LOG_WARN(QString("[DeepReID] TensorRT 初始化失败: %1")
+                         .arg(QString::fromUtf8(e.what())));
+            delete m_trt; m_trt = nullptr;
+        } catch (...) {
+            delete m_trt; m_trt = nullptr;
+        }
+    }
+
+    // TensorRT 不可用时，尝试 OpenCV DNN CUDA 后端（自检失败再回退 CPU）
+    if (!m_trt && m_preferCuda) {
+        try {
+            m_net.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+            m_net.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+            // 自检：用一次真实尺寸(256×128)前向验证 CUDA 后端真正可用
+            // （部分环境设置后端不报错，直到 forward 才抛异常）；失败则回退 CPU。
+            cv::Mat dummy = cv::Mat::zeros(IN_H, IN_W, CV_32FC3);
+            cv::Mat blob = cv::dnn::blobFromImage(dummy);
+            m_net.setInput(blob);
+            m_net.forward();
+            m_cudaActive = true;
+            m_backend = QStringLiteral("CUDA(GPU)");
+        } catch (const cv::Exception &e) {
+            LOG_WARN(QString("[DeepReID] OpenCV CUDA 后端不可用，回退 CPU: %1")
+                         .arg(QString::fromStdString(e.what())));
+            m_cudaActive = false;
+        }
+    }
+    if (!m_trt && !m_cudaActive) {
+        try {
+            m_net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+            m_net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+        } catch (...) {
+        }
+        m_backend = QStringLiteral("CPU");
     }
 
     m_ready = true;
     m_path = onnxPath;
-    LOG_INFO("[DeepReID] 深度 ReID 模型已加载: " + onnxPath);
+    LOG_INFO(QString("[DeepReID] 深度 ReID 模型已加载: %1 | 推理后端=%2")
+                 .arg(onnxPath).arg(m_backend));
     return true;
 }
 
@@ -59,6 +117,12 @@ cv::Mat DeepReID::embed(const cv::Mat &frame, const cv::Rect &personBox)
     cv::Rect box = personBox & cv::Rect(0, 0, frame.cols, frame.rows);
     if (box.width < 4 || box.height < 8)
         return cv::Mat();
+
+    // ===== 优先使用 TensorRT(GPU) 后端（识别推理卸载到 GPU）=====
+    if (m_trt && m_trt->ready()) {
+        QMutexLocker locker(&m_mutex);   // 同一引擎/流不可并发使用
+        return m_trt->embed(frame, box);
+    }
 
     cv::Mat crop = frame(box).clone();
 

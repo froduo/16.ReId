@@ -14,9 +14,9 @@
 #include <QStringList>
 #include <algorithm>
 
-// 方向判定约定（与在线一致）：
-//   人从上往下穿过检测区域：进入侧=A(顶) → 离开侧=B(底)  => 上车
-//   人从下往上穿过检测区域：进入侧=B(底) → 离开侧=A(顶)  => 下车
+// 方向判定约定（与在线一致）——【相机装反 / 视角反转后的新定义】：
+//   人从上往下穿过检测区域：进入侧=A(顶) → 离开侧=B(底)  => 下车
+//   人从下往上穿过检测区域：进入侧=B(底) → 离开侧=A(顶)  => 上车
 
 OfflineDetectForm::OfflineDetectForm(PersonDetector *detector,
                                      RegionManager *regionManager,
@@ -65,11 +65,11 @@ OfflineDetectForm::OfflineDetectForm(PersonDetector *detector,
     m_zoneMonitor->setStartConfirmFrames(1);
     m_zoneMonitor->setReverseCooldownMs(0);
 
-    // 上车：A→B（从上往下）
+    // 上车：B→A（从下往上）
     connect(m_zoneMonitor, &ZoneMonitor::boardingEvent, this, [this](const ZoneEvent &evt) {
         m_boardCount++;
-        m_trackDirection[evt.trackId] = QStringLiteral("上车 ↓(从上往下)");
-        LOG_INFO(QString("[OfflineDetect] ★ 上车: track=%1, A(顶)→B(底), enter=%2, exit=%3")
+        m_trackDirection[evt.trackId] = QStringLiteral("上车 ↑(从下往上)");
+        LOG_INFO(QString("[OfflineDetect] ★ 上车: track=%1, B(底)→A(顶), enter=%2, exit=%3")
                      .arg(evt.trackId)
                      .arg(evt.enterTime.toString("HH:mm:ss.zzz"))
                      .arg(evt.exitTime.toString("HH:mm:ss.zzz")));
@@ -78,11 +78,11 @@ OfflineDetectForm::OfflineDetectForm(PersonDetector *detector,
                                      .arg(m_boardCount).arg(m_alightCount));
     });
 
-    // 下车：B→A（从下往上）
+    // 下车：A→B（从上往下）
     connect(m_zoneMonitor, &ZoneMonitor::alightingEvent, this, [this](const ZoneEvent &evt) {
         m_alightCount++;
-        m_trackDirection[evt.trackId] = QStringLiteral("下车 ↑(从下往上)");
-        LOG_INFO(QString("[OfflineDetect] ★ 下车: track=%1, B(底)→A(顶), enter=%2, exit=%3")
+        m_trackDirection[evt.trackId] = QStringLiteral("下车 ↓(从上往下)");
+        LOG_INFO(QString("[OfflineDetect] ★ 下车: track=%1, A(顶)→B(底), enter=%2, exit=%3")
                      .arg(evt.trackId)
                      .arg(evt.enterTime.toString("HH:mm:ss.zzz"))
                      .arg(evt.exitTime.toString("HH:mm:ss.zzz")));
@@ -392,7 +392,7 @@ void OfflineDetectForm::onBatchDetect()
                  .arg(m_boardCount).arg(m_alightCount));
 
     QMessageBox::information(this, "连续检测完成",
-        QString("连续检测完成。\n\n上车（从上往下）：%1 次\n下车（从下往上）：%2 次")
+        QString("连续检测完成。\n\n上车（从下往上）：%1 次\n下车（从上往下）：%2 次")
             .arg(m_boardCount).arg(m_alightCount));
 }
 
@@ -450,8 +450,9 @@ void OfflineDetectForm::onVideoDetect()
     m_videoFps = m_videoCap.get(cv::CAP_PROP_FPS);
     if (!(m_videoFps > 1.0)) m_videoFps = 25.0;
 
-    // 抽帧：把“画面刷新 + 检测”限制在约 12fps，兼顾可见性与处理速度
-    m_videoStep = qMax(1, static_cast<int>(m_videoFps / 12.0 + 0.5));
+    // 自适应检测跳帧：有人=1 逐帧检测（不漏穿越）；无人逐渐加大步长（真正加速扫过空场景）
+    m_videoDetectSkip = 1;
+    m_videoNoPersonFrames = 0;
 
     // 先显示视频首帧，确认选对了文件
     cv::Mat first;
@@ -473,20 +474,22 @@ void OfflineDetectForm::onVideoDetect()
     // 按钮可响应；实际节奏由“检测耗时”决定（与检测能力匹配）。
     m_videoTimer->start(0);
 
-    LOG_INFO(QString("[OfflineDetect] ===== 视频判定开始(边播边检测): %1 "
-                     "(fps=%2, step=%3) =====")
-                 .arg(QFileInfo(path).fileName()).arg(m_videoFps, 0, 'f', 2)
-                 .arg(m_videoStep));
+    LOG_INFO(QString("[OfflineDetect] ===== 视频判定开始(自适应检测跳帧): %1 "
+                     "(fps=%2) =====")
+                 .arg(QFileInfo(path).fileName()).arg(m_videoFps, 0, 'f', 2));
 }
 
 void OfflineDetectForm::onVideoTick()
 {
     if (!m_videoActive) return;
 
-    // 读取 step 帧（丢弃中间帧以控制检测频率），对最后一帧做检测+显示
+    // 自适应检测跳帧：读取 m_videoDetectSkip 帧（丢弃中间帧），检测最后一帧。
+    // 有人时步长=1（逐帧检测不漏穿越）；无人时步长逐渐增大，真正加速扫过空场景。
+    const int skipUsed = m_videoDetectSkip;   // 本次实际使用的跳帧步长
+    const int startIdx = m_videoFrameIdx;     // 本次跳帧前的原始帧序号
     cv::Mat frame;
     bool okRead = false;
-    for (int i = 0; i < m_videoStep; ++i) {
+    for (int i = 0; i < skipUsed; ++i) {
         if (!m_videoCap.read(frame) || frame.empty()) {
             okRead = false;
             break;
@@ -503,7 +506,23 @@ void OfflineDetectForm::onVideoTick()
     m_currentImage = frame;
     m_currentImagePath = m_videoPath;
 
-    // 检测 + 跟踪 + 区域方向判定 + 画面显示（每帧都会刷新 ImageView → 可见视频画面）
+    // ===== 跳帧模式：先「探测」最后一帧是否有人（只检测、不加入逻辑判断）=====
+    if (skipUsed > 1 && m_detector && m_detector->isLoaded()) {
+        const QVector<cv::Rect> probeDets = m_detector->detect(frame);
+        if (!probeDets.isEmpty()) {
+            // 有人：回退到跳帧起点。当前帧尚未加入跟踪/门线/计数等逻辑判断，
+            // 回退后从 startIdx 逐帧完整处理 → 最后一帧只被完整检测一次、无时间倒序。
+            if (m_videoCap.set(cv::CAP_PROP_POS_FRAMES, startIdx)) {
+                m_videoFrameIdx = startIdx;
+            }
+            m_videoDetectSkip = 1;
+            m_videoNoPersonFrames = 0;
+            return;   // 下一 tick 从 startIdx 逐帧完整处理（含这一帧）
+        }
+        // 无人：继续往下完整处理（更新无人计数 + 跟踪/门线状态 + 显示画面）
+    }
+
+    // ===== 完整处理（逐帧模式，或跳帧无人）=====
     try {
         processFrameInternal(frame);
     } catch (const cv::Exception &e) {
@@ -569,8 +588,8 @@ void OfflineDetectForm::finishVideoDetect(const QString &reason)
             if (std::fabs(dy) > std::fabs(bestDy)) { bestDy = dy; bestTid = it.key(); }
         }
         if (bestTid > 0 && std::fabs(bestDy) >= needDy) {
-            strictVerdict = (bestDy < 0.0f) ? QStringLiteral("下车（方向判定）")
-                                            : QStringLiteral("上车（方向判定）");
+            strictVerdict = (bestDy < 0.0f) ? QStringLiteral("上车（方向判定）")
+                                            : QStringLiteral("下车（方向判定）");
             looseDetail = QString("%1, ID%2 首末 y %3→%4 (dy=%5)")
                               .arg(bestDy < 0.0f ? QStringLiteral("由下往上")
                                                  : QStringLiteral("由上往下"))
@@ -708,12 +727,46 @@ void OfflineDetectForm::finishVideoDetect(const QString &reason)
     QMessageBox::information(this, "视频判定结果", summary);
 }
 
-void OfflineDetectForm::processFrameInternal(const cv::Mat &frame)
+bool OfflineDetectForm::processFrameInternal(const cv::Mat &frame)
 {
-    if (frame.empty() || !m_detector || !m_detector->isLoaded()) return;
+    if (frame.empty() || !m_detector || !m_detector->isLoaded()) return false;
 
-    // 检测（仅 person 类别，含小目标过滤）
+    // ===== 离线检测日志（诊断）：输出“检测当前图片”的完整过程 =====
+    const QString imgName = m_currentImagePath.isEmpty()
+                                ? QStringLiteral("(内嵌图像)")
+                                : QFileInfo(m_currentImagePath).fileName();
+    LOG_INFO(QString("[OfflineDetect] ===== 检测当前图片: %1 (%2x%3) | 置信度阈值=%4 =====")
+                 .arg(imgName).arg(frame.cols).arg(frame.rows)
+                 .arg(m_detector->confThreshold(), 0, 'f', 2));
+
+    // 1) 原始检测（低阈值 0.05、含全部类别）：用于定位“为何检测不到人”
+    const QVector<Detection> rawDets = m_detector->detectAll(frame);
+    LOG_INFO(QString("[OfflineDetect] 原始检测(score>=0.05，未过滤): %1 个").arg(rawDets.size()));
+    for (const Detection &d : rawDets) {
+        const cv::Rect box(d.x, d.y, d.w, d.h);
+        const bool pass = (d.class_id == 0) && m_detector->passSizeFilter(box, frame.cols, frame.rows);
+        const double asp = (d.h > 0) ? static_cast<double>(d.w) / d.h : 0.0;
+        LOG_INFO(QString("[OfflineDetect]   raw: class=%1 score=%2 box=(%3,%4,%5x%6) w/h=%7 %8")
+                     .arg(d.class_id).arg(d.score, 0, 'f', 3)
+                     .arg(d.x).arg(d.y).arg(d.w).arg(d.h)
+                     .arg(asp, 0, 'f', 2)
+                     .arg(d.class_id == 0
+                              ? (pass ? QStringLiteral("→可保留")
+                                      : QStringLiteral("→被尺寸/宽高比过滤"))
+                              : QStringLiteral("→非 person 类别，忽略")));
+    }
+
+    // 2) 过滤后检测（person 类别 + 尺寸/宽高比过滤 + 静态误检抑制）
     QVector<cv::Rect> detections = m_detector->detect(frame);
+    LOG_INFO(QString("[OfflineDetect] 过滤后有效人体框: %1 个").arg(detections.size()));
+    for (const cv::Rect &d : detections) {
+        LOG_INFO(QString("[OfflineDetect]   keep: box=(%1,%2,%3x%4)")
+                     .arg(d.x).arg(d.y).arg(d.width).arg(d.height));
+    }
+    if (detections.isEmpty()) {
+        LOG_WARN(QString("[OfflineDetect] 当前图片 0 个有效人体框：可能因置信度低于阈值 / "
+                         "类别非 person / 尺寸或宽高比被过滤 / 静态误检抑制"));
+    }
 
     // 统计人物轨迹范围（归一化中心点），用于结论中与检测区域对比
     for (const cv::Rect &d : detections) {
@@ -728,6 +781,18 @@ void OfflineDetectForm::processFrameInternal(const cv::Mat &frame)
 
     // 跟踪 + ReID 特征（3参重载会维护 prevCenter 与 reidFeature）
     QVector<TrackedPerson> persons = m_tracker->update(detections, frame, m_reidExtractor);
+
+    // 3) 跟踪轨迹日志：区分真实检测框与卡尔曼预测外推框
+    LOG_INFO(QString("[OfflineDetect] 跟踪轨迹: %1 条").arg(persons.size()));
+    for (const TrackedPerson &tp : persons) {
+        LOG_INFO(QString("[OfflineDetect]   track ID=%1 detected=%2 bbox=(%3,%4,%5x%6) "
+                         "age=%7 missed=%8 center=(%9,%10)")
+                     .arg(tp.trackId)
+                     .arg(tp.detected ? QStringLiteral("true") : QStringLiteral("false"))
+                     .arg(tp.bbox.x).arg(tp.bbox.y).arg(tp.bbox.width).arg(tp.bbox.height)
+                     .arg(tp.age).arg(tp.missedFrames)
+                     .arg(tp.center.x, 0, 'f', 1).arg(tp.center.y, 0, 'f', 1));
+    }
 
     // 统计每条轨迹的 y 范围与首/末 y（只统计真实检测框，忽略卡尔曼预测漂移）
     for (const TrackedPerson &tp : persons) {
@@ -748,7 +813,7 @@ void OfflineDetectForm::processFrameInternal(const cv::Mat &frame)
     int imgW = frame.cols;
     int imgH = frame.rows;
 
-    // 通道方向判定（与在线一致：A→B 上车，B→A 下车）
+    // 通道方向判定（与在线一致：A→B 下车，B→A 上车）
     if (m_zoneMonitor && m_regionManager) {
         refreshZoneMonitor();
         m_zoneMonitor->processFrame(persons, frame, m_regionManager, imgW, imgH);
@@ -760,7 +825,19 @@ void OfflineDetectForm::processFrameInternal(const cv::Mat &frame)
         if (p.isInsideRegion) inRegionCount++;
     }
 
-    // 显示结果
+    // ===== 自适应检测跳帧：有人逐帧检测、无人加速跳帧 =====
+    // 用本帧检测结果更新「下一次」的检测步长（onVideoTick 据此决定读多少帧）。
+    const bool hasPerson = !detections.isEmpty();
+    if (hasPerson) {
+        m_videoNoPersonFrames = 0;
+        m_videoDetectSkip = 1;      // 有人：下一帧继续逐帧检测，不漏穿越
+    } else {
+        ++m_videoNoPersonFrames;
+        const int level = m_videoNoPersonFrames / 3;   // 每连续无人 3 帧升一档
+        m_videoDetectSkip = 1 << std::min(4, level);   // 1,2,4,8,16（真正加速扫帧）
+    }
+
+    // 显示结果（检测帧才显示：有人逐帧显示，无人随跳帧稀疏显示）
     displayResult(frame, detections, persons);
 
     m_labelInfo->setText(QString("检测: %1 人, 区域内: %2 | 上车 %3, 下车 %4")
@@ -769,6 +846,8 @@ void OfflineDetectForm::processFrameInternal(const cv::Mat &frame)
 
     LOG_INFO(QString("[OfflineDetect] Detection done: %1 persons, %2 in region, board=%3, alight=%4")
                  .arg(persons.size()).arg(inRegionCount).arg(m_boardCount).arg(m_alightCount));
+
+    return hasPerson;
 }
 
 void OfflineDetectForm::displayResult(const cv::Mat &frame,

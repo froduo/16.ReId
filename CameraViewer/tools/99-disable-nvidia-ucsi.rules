@@ -1,0 +1,8 @@
+# Disable NVIDIA TU104 USB Type-C UCSI Controller (PCI 10de:1ad9)
+#
+# 本卡的 RTX 2060 未焊接物理 USB-C 口（VirtualLink），但 GPU 芯片内置的
+# USB Type-C UCSI 控制器仍会被 PCIe 枚举，nvidia-gpu 驱动持续轮询它时
+# 产生 "i2c timeout error" 风暴，重负载下可把整机拖挂。
+# 开机时把该 PCI 功能从总线上移除，即可彻底消除超时风暴，且不影响
+# 显示 / CUDA / TensorRT 等任何 GPU 功能。
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{device}=="0x1ad9", RUN+="/bin/sh -c 'echo 1 > /sys$env{DEVPATH}/remove'"

@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QDateTime>
+#include <QJsonArray>
 #include <QMutex>
 #include <QMap>
 #include <QSet>
@@ -36,11 +37,14 @@
 #include "passengerbook.h"
 #include "identitymatchworker.h"
 #include "tripdatastore.h"
+#include "personfolder.h"
+#include "foldermatchworker.h"
 #include "version.h"
 #include "backgroundmodel.h"
 #include <QThread>
 
 class QNetworkAccessManager;
+class StatusWebServer;
 
 namespace Ui {
 class MainWindow;
@@ -77,6 +81,14 @@ struct PendingAlight {
     QVector<cv::Mat> feats;     // 探测特征序列（已组装）
 };
 
+// 人员进出记录行：一次上/下车事件，乘客ID 与保存图片目录 person_N_日期 对应
+struct PersonEventRow {
+    int personId{-1};           // person 序号
+    QString status;             // "上车" / "下车"
+    int matchedPersonId{-1};    // 匹配到的对方 person 序号（未匹配=-1）
+    float similarity{0.0f};
+};
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -87,6 +99,7 @@ public:
 
 private slots:
     void onToggleCapture();
+    void onSelectVideo();
     void onFrameGrabbed(QImage img);
     void onGrabThreadDeviceLost();
     void onTryReconnect();
@@ -97,7 +110,7 @@ private slots:
     // 检测 / ReID 相关
     void onFrameProcessed(QImage img, QVector<TrackedPerson> persons);
     void onDrawRegion();
-    void onClearRegions();
+    void onClearCounts();
     void onPolygonCompleted(QVector<QPointF> points);
     void onOfflineDetect();
     void onSetParams();
@@ -118,6 +131,7 @@ private:
 
     // 采集状态
     bool m_isCapturing{false};
+    bool m_videoMode{false};        // 当前是否处于「视频文件检测」模式
     void updateCaptureStatus();
 
     // FPS 计算
@@ -178,6 +192,8 @@ private:
 
     // ===== 访客身份管理（ReID 跨 track 匹配）=====
     QMap<int, VisitorRecord> m_visitors;   // visitorId -> VisitorRecord
+    QVector<PersonEventRow> m_personEventRows;   // 上下车事件行（表格用）
+    QSet<int> m_activePersonIds;                 // 当前仍在画面中的 person 序号（用于关闭消失乘客的视频）
     int m_nextVisitorId{1};
     // ReID 匹配阈值现由 m_config.reidMatchThreshold 控制（可在系统配置中调整）
 
@@ -208,6 +224,53 @@ private:
     /// 下车比对结果结算（在主线程执行：命中/回退/异常判定 + 保存 + 记录）
     void applyAlightingMatch(const PendingAlight &pend, int bestId,
                              float similarity, bool matched);
+
+    // ===== 按乘客分目录的图像归档 + 后台整目录全图比对 =====
+    /// 上车目录登记（供下车目录做时间过滤 + 未匹配过滤）
+    struct BoardFolderEntry {
+        int personId{-1};
+        QString dir;
+        qint64 timeMs{0};
+        bool matched{false};
+    };
+    /// 一次「下车目录 vs 上车目录」后台比对任务的暂存信息
+    struct FolderMatchPending {
+        int alightPersonId{-1};
+        QString alightDir;
+        QDateTime alightTime;
+    };
+
+    PersonFolder *m_personFolder{nullptr};
+    QThread *m_folderMatchThread{nullptr};
+    FolderMatchWorker *m_folderMatchWorker{nullptr};
+    quint64 m_folderMatchJobCounter{0};
+    QVector<BoardFolderEntry> m_boardFolders;      // 上车目录登记表
+    QMap<quint64, FolderMatchPending> m_folderMatchPending;
+    QString m_sessionStatePath;                    // 会话状态持久化文件路径
+
+    // ===== 新乘客出现换号：最近消失 person 的 ReID 续接缓存 =====
+    // 时间相邻（≤ kPersonRotateGapMs）且 ReID 相似度 ≥ 阈值时，新 track 续接原编号不换号；
+    // 否则视为新乘客出现，换号分配新 person_N。
+    QMap<int, cv::Mat> m_personReidFeature;   // personId -> 最近一次 ReID 特征
+    QMap<int, qint64> m_personLastSeenMs;     // personId -> 最近出现时间(ms)
+    static constexpr qint64 kPersonRotateGapMs = 5000; // 时间相邻窗口（毫秒）
+
+    // ===== Web 状态服务（手机端查看上下车状态）=====
+    StatusWebServer *m_webServer{nullptr};
+    QJsonArray m_recentMatches;                    // 最近匹配记录（board/alight/similarity）
+    void initWebServer();
+    void pushWebStatus();
+
+    void initPersonFolder();
+    /// 会话状态持久化：人员进出记录 + 上车目录登记 + 计数（重启后恢复，人工清零才归零）
+    void saveSessionState();
+    void loadSessionState();
+    /// 帧处理时：乘客出现即分配 person_N 并持续保存原始整帧（预热 + 节流）
+    void savePersonAppearanceFrames(const QVector<TrackedPerson> &persons,
+                                    const cv::Mat &rawFrame);
+    /// 后台全图比对结果结算：写 marker + 标记去重 + 落库
+    void onFolderMatchFinished(quint64 jobId, int bestPersonId, QString bestDir,
+                               float similarity, bool matched);
 
     // ===== 乘车数据存储（每站上下车人数 + 车厢内人数；SQLite 默认，可扩展 PostgreSQL）=====
     TripDataStore *m_tripStore{nullptr};
@@ -269,6 +332,12 @@ private:
                                      const QDateTime &time);
 
     void onCloseCamera();
+    /// 启动检测采集管线（RTSP 或视频文件通用）
+    void startDetectionPipeline();
+    /// 切换 PersonFolder 保存根目录到视频对应文件夹
+    void switchPersonFolderToVideo(const QString &videoPath);
+    /// 恢复 PersonFolder 保存根目录（视频检测结束后）
+    void restorePersonFolderFromVideo();
     void updateCameraStatus(bool connected);
     void applySettings();
     void updateDiskSpaceStatus();

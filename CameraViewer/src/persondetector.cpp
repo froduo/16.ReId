@@ -215,6 +215,12 @@ QVector<cv::Rect> PersonDetector::detect(const cv::Mat &frame)
         const bool diagLog = (s_diagTimer.elapsed() >= 1000);
         if (diagLog) s_diagTimer.restart();
 
+        // 「无人检测」日志单独降频（10 秒 1 条），空场景下不刷屏
+        static QElapsedTimer s_noDetTimer;
+        if (!s_noDetTimer.isValid()) s_noDetTimer.start();
+        const bool noDetLog = (s_noDetTimer.elapsed() >= 10000);
+        if (noDetLog) s_noDetTimer.restart();
+
         if (!detections.empty()) {
             if (diagLog) {
                 LOG_INFO(QString("[PersonDetector] TensorRT total detections: %1 (confThreshold=%2)")
@@ -226,7 +232,7 @@ QVector<cv::Rect> PersonDetector::detect(const cv::Mat &frame)
                                  .arg(d.x).arg(d.y).arg(d.w).arg(d.h));
                 }
             }
-        } else if (diagLog) {
+        } else if (noDetLog) {
             LOG_WARN(QString("[PersonDetector] TensorRT: NO detections at all (confThreshold=%1, image=%2x%3)")
                          .arg(m_confThreshold, 0, 'f', 2).arg(frame.cols).arg(frame.rows));
         }

@@ -25,6 +25,16 @@ public:
     bool openCamera(const QString &rtspUrl);
 
     /**
+     * @brief 打开本地视频文件（用于「选择视频」离线检测）
+     * @param path 本地视频文件路径
+     * @return 成功返回 true
+     */
+    bool openVideoFile(const QString &path);
+
+    /// 当前是否打开的是本地视频文件（而非 RTSP 流）
+    bool isVideoFile() const { return m_isVideoFile; }
+
+    /**
      * @brief 获取一帧图像
      * @param frame 输出的 cv::Mat 帧（BGR 格式）
      * @return 成功返回 true
@@ -67,6 +77,7 @@ signals:
 private:
     cv::VideoCapture m_cap;
     QString m_rtspUrl;
+    bool m_isVideoFile{false};
     int m_frameWidth = 0;
     int m_frameHeight = 0;
     double m_fps = 0.0;

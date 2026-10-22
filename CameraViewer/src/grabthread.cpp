@@ -183,9 +183,15 @@ void GrabThread::run()
             }
 
             if (m_consecutiveFailCount >= MAX_FAIL_COUNT) {
-                LOG_ERR(QString("[GrabThread-%1] MAX_FAIL_COUNT reached, emitting deviceLost")
-                        .arg(m_channelName));
-                emit deviceLost();
+                if (m_camera->isVideoFile()) {
+                    LOG_INFO(QString("[GrabThread-%1] 视频文件读取完毕，共 %2 帧")
+                                 .arg(m_channelName).arg(frameIndex));
+                    emit videoFinished();
+                } else {
+                    LOG_ERR(QString("[GrabThread-%1] MAX_FAIL_COUNT reached, emitting deviceLost")
+                            .arg(m_channelName));
+                    emit deviceLost();
+                }
                 m_running = false;
                 break;
             }

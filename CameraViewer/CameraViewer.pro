@@ -5,7 +5,7 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 CONFIG += c++17
 
 # 启用 OpenCV CUDA 加速（背景分割等）；若本机 OpenCV 未编译 CUDA 可注释掉本行
-DEFINES += USE_OPENCV_CUDA
+#DEFINES += USE_OPENCV_CUDA  # 88deploy: OpenCV CUDA only sm_61, RTX2060 sm_75 unsupported
 
 SOURCES += \
     src/main.cpp \
@@ -22,13 +22,17 @@ SOURCES += \
     src/backgroundmodel.cpp \
     src/regionmanager.cpp \
     src/trt_yolo.cpp \
+    src/trt_reid.cpp \
     src/offlinedetectform.cpp \
     src/settingform.cpp \
     src/visitorlog.cpp \
     src/passengerbook.cpp \
     src/identitymatchworker.cpp \
     src/zonemonitor.cpp \
-    src/tripdatastore.cpp
+    src/tripdatastore.cpp \
+    src/personfolder.cpp \
+    src/foldermatchworker.cpp \
+    src/statuswebserver.cpp
 
 HEADERS += \
     src/version.h \
@@ -47,6 +51,7 @@ HEADERS += \
     src/backgroundmodel.h \
     src/regionmanager.h \
     src/trt_yolo.h \
+    src/trt_reid.h \
     src/offlinedetectform.h \
     src/settingform.h \
     src/visitorlog.h \
@@ -54,6 +59,9 @@ HEADERS += \
     src/identitymatchworker.h \
     src/zonemonitor.h \
     src/tripdatastore.h \
+    src/personfolder.h \
+    src/foldermatchworker.h \
+    src/statuswebserver.h \
     src/hungarian.h
 
 FORMS += \
@@ -74,10 +82,6 @@ LIBS += \
     -lopencv_videoio \
     -lopencv_dnn \
     -lopencv_video \
-    -lopencv_cudaarithm \
-    -lopencv_cudaimgproc \
-    -lopencv_cudafilters \
-    -lopencv_cudawarping
 
 # TensorRT & CUDA
 INCLUDEPATH += /usr/local/cuda/include \
@@ -102,6 +106,11 @@ QMAKE_POST_LINK += mkdir -p $$ENGINE_DEST_DIR && test "$$OUT_PWD" != "$$PWD" && 
 # 深度 ReID(OSNet) ONNX 模型一并复制到输出目录（与 [ReID]/DeepModelPath 一致）
 OSNET_SOURCE = $$PWD/model/osnet_x1_0_head_finetuned.onnx
 QMAKE_POST_LINK += && test "$$OUT_PWD" != "$$PWD" && test -f $$OSNET_SOURCE && cp -f $$OSNET_SOURCE $$ENGINE_DEST_DIR || true
+
+# 深度 ReID(OSNet) 的 TensorRT 引擎（若已在源码 model/ 下构建好）一并复制，
+# 这样目标机首次启动即可直接用 GPU，无需现场构建引擎。
+OSNET_ENGINE_SOURCE = $$PWD/model/osnet_x1_0_head_finetuned.engine
+QMAKE_POST_LINK += && test "$$OUT_PWD" != "$$PWD" && test -f $$OSNET_ENGINE_SOURCE && cp -f $$OSNET_ENGINE_SOURCE $$ENGINE_DEST_DIR || true
 
 # ===== 版本号自动生成（每次构建自增）=====
 # 构建前先运行 gen_version.sh 重新生成 src/version.h，

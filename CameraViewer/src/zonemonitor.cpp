@@ -53,6 +53,7 @@ void ZoneMonitor::setMinDisplacement(float d) { m_minDisplacement = qMax(0.0f, d
 void ZoneMonitor::setStartConfirmFrames(int frames) { m_startConfirmFrames = qMax(1, frames); }
 void ZoneMonitor::setMinOverlapArea(float area) { m_minOverlapArea = qMax(0.0f, area); }
 void ZoneMonitor::setReverseCooldownMs(qint64 ms) { m_reverseCooldownMs = qMax<qint64>(0, ms); }
+void ZoneMonitor::setSameDirCooldownMs(qint64 ms) { m_sameDirCooldownMs = qMax<qint64>(0, ms); }
 void ZoneMonitor::setEdgeMargin(float margin) { m_edgeMargin = qMax(0.0f, margin); }
 
 void ZoneMonitor::setLineDeadband(float d) { m_lineDeadband = qMax(0.0f, d); }
@@ -127,14 +128,22 @@ void ZoneMonitor::buildDoorLines(const QVector<DetectionRegion> &regions)
                      .arg(l.b.x, 0, 'f', 4).arg(l.b.y, 0, 'f', 4)
                      .arg(l.length, 0, 'f', 4)
                      .arg(l.normal.x, 0, 'f', 3).arg(l.normal.y, 0, 'f', 3)
-                     .arg(l.entry == EntryDirection::TopToBottom ? "TopToBottom(上车A→B)"
-                                                                 : "BottomToTop(下车B→A)"));
+                     .arg(l.entry == EntryDirection::TopToBottom
+                              ? "TopToBottom(从上往下A→B=下车)"
+                              : "BottomToTop(从下往上B→A=下车)"));
     }
 }
 
 void ZoneMonitor::setChannelZones(const QVector<DetectionRegion> &regions)
 {
     buildDoorLines(regions);
+}
+
+void ZoneMonitor::resetTracks()
+{
+    m_tracks.clear();
+    m_trackToVisitor.clear();
+    m_anchors.clear();
 }
 
 int ZoneMonitor::bestLineIndex(const cv::Point2f &p, float maxPerp, float spanMargin) const
@@ -193,6 +202,10 @@ int ZoneMonitor::matchOrCreateVisitor(const TrackedPerson &person, const cv::Mat
     for (auto it = m_visitorFeatures.begin(); it != m_visitorFeatures.end(); ++it) {
         const int vid = it.key();
         const cv::Mat &storedFeature = it.value();
+
+        // 跳过「在车内」的 visitor（最后穿越=上车）：车内的人不会作为新 track 出现在车外，
+        // 避免视野中多人同时出现时被 ReID 误匹配成同一个 visitor（共用 id / 混用视频）。
+        if (m_lastCrossingTypeByVisitor.value(vid, 0) > 0) continue;
 
         // 仅与当前不在任何接近窗口内的访客匹配（已离开）
         bool isInside = false;
@@ -325,10 +338,30 @@ void ZoneMonitor::emitCrossing(DoorTrackedPerson &t, int trackId, const DoorLine
     if (stitched && eff == RecoveryLayer::Realtime) eff = RecoveryLayer::Stitch;
     if (coasted && eff == RecoveryLayer::Realtime)  eff = RecoveryLayer::Inertia;
 
-    // 方向语义（上下车定义）：
-    //   上→下（TopToBottom）：A(顶/上侧) → B(底/下侧)，即乘客从上往下穿越分界线 = 上车；
-    //   下→上（BottomToTop）：B(底/下侧) → A(顶/上侧)，即乘客从下往上穿越分界线 = 下车。
-    const bool boarding = (line.entry == EntryDirection::TopToBottom) ? aToB : bToA;
+    // 方向语义（上下车定义）——【相机装反 / 视角反转后的新定义】：
+    //   A(顶/上侧) → B(底/下侧)：从上往下穿越分界线 = 下车；
+    //   B(底/下侧) → A(顶/上侧)：从下往上穿越分界线 = 上车。
+    //   entryDirection==TopToBottom（默认）：A→B=下车，B→A=上车；
+    //   entryDirection==BottomToTop：整体取反（A→B=上车，B→A=下车）。
+    const bool boarding = (line.entry == EntryDirection::TopToBottom) ? bToA : aToB;
+
+    // ===== 起始侧约束（与方向设置无关的物理侧约束）=====
+    //   A→B 穿越：必须先在线 A(上)侧被检出；B→A 穿越：必须先在线 B(下)侧被检出。
+    //   用于抑制“目标首帧出现在对侧、随后抖动跨线”造成的误判。
+    if (t.firstSide != DoorSide::Unknown) {
+        const DoorSide requiredStart = aToB ? DoorSide::ASide : DoorSide::BSide;
+        if (t.firstSide != requiredStart) {
+            LOG_WARN(QString("[ZoneMonitor] SUPPRESS 起始侧不符: V%1 track=%2 region=%3 判定=%4 "
+                             "但起始侧=%5（期望%6）")
+                         .arg(t.visitorId).arg(trackId).arg(line.regionId)
+                         .arg(boarding ? "上车" : "下车")
+                         .arg(t.firstSide == DoorSide::ASide ? "A(上)" : "B(下)")
+                         .arg(requiredStart == DoorSide::ASide ? "A(上)" : "B(下)"));
+            t.crossedEmitted = true;
+            stopCapture(t);
+            return;
+        }
+    }
 
     const float sideExit = line.signedSide(crossPoint);
     const float dyMove = sideExit - t.enterSigned;
@@ -344,6 +377,8 @@ void ZoneMonitor::emitCrossing(DoorTrackedPerson &t, int trackId, const DoorLine
     }
 
     // 防误判：同人反向穿越冷却窗口（不计数）
+    // 注意：同方向连续穿越（如门线附近逗留导致的连续两次上车）不在此抑制，
+    // 每次真实穿越都应当计数，person 编号在 MainWindow 事件处理中每次 +1。
     if (t.visitorId > 0) {
         const int type = boarding ? +1 : -1;
         qint64 lastMs = 0; int lastType = 0;
@@ -351,7 +386,7 @@ void ZoneMonitor::emitCrossing(DoorTrackedPerson &t, int trackId, const DoorLine
             LOG_WARN(QString("[ZoneMonitor] SUPPRESS 反向穿越(疑似抖动/误判): V%1 track=%2 region=%3 "
                              "本次=%4 startSigned=%5 exitSigned=%6 dy=%7 | 上次=%8 间隔=%9ms < 冷却=%10ms")
                          .arg(t.visitorId).arg(trackId).arg(line.regionId)
-                         .arg(boarding ? "上车候选(A→B)" : "下车候选(B→A)")
+                         .arg(boarding ? "上车候选" : "下车候选")
                          .arg(t.enterSigned, 0, 'f', 4).arg(sideExit, 0, 'f', 4).arg(dyMove, 0, 'f', 4)
                          .arg(lastType > 0 ? "上车" : "下车")
                          .arg(nowMs - lastMs).arg(m_reverseCooldownMs));
@@ -765,6 +800,14 @@ void ZoneMonitor::processFrame(QVector<TrackedPerson> &persons,
         finalizeLost(m_tracks[id], id, cv::Mat(), nowMs);
         m_tracks.remove(id);
     }
+}
+
+void ZoneMonitor::setCounters(int boarding, int alighting)
+{
+    m_boardingCount = boarding;
+    m_alightingCount = alighting;
+    LOG_INFO(QString("[ZoneMonitor] 恢复累计计数: 上车=%1 下车=%2")
+                 .arg(boarding).arg(alighting));
 }
 
 void ZoneMonitor::reset()

@@ -58,6 +58,7 @@ public:
 
 signals:
     void deviceLost();                              // 检测到相机掉线
+    void videoFinished();                           // 本地视频文件读取完毕
     void frameGrabbed(QImage img);                  // RGB QImage（用于显示）
     void rawFrameGrabbed(const cv::Mat &frame);     // 原始 BGR cv::Mat（用于保存）
     void frameProcessed(const QImage &img, const QVector<TrackedPerson> &persons); // 检测处理后的帧和跟踪结果
@@ -70,7 +71,9 @@ private:
     CameraController* m_camera;
     QString m_channelName;
     int m_consecutiveFailCount{0};
-    static const int MAX_FAIL_COUNT = 300; // 连续失败阈值（约15秒）
+    // 连续失败阈值：配合 FFmpeg stimeout(5s)，连续 5 次读超时（约 25~30 秒）
+    // 即判定相机掉线并触发重连，缩短漏检窗口。
+    static const int MAX_FAIL_COUNT = 5;
 
     // 检测管线
     PersonDetector *m_detector{nullptr};

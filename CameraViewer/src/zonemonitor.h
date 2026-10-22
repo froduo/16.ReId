@@ -14,9 +14,9 @@
 /**
  * @brief 穿越事件类型
  *
- * 方向约定（基于虚拟“门线”）：
- *  - 乘客中心点从门线「外侧(A)」跨到「内侧(B)」= **上车**（默认，等价于图像中从上往下）；
- *  - 乘客中心点从门线「内侧(B)」跨到「外侧(A)」= **下车**。
+ * 方向约定（基于虚拟“门线”）——【相机装反 / 视角反转后的新定义】：
+ *  - 乘客中心点从门线「外侧(A/上侧)」跨到「内侧(B/下侧)」= **下车**（A→B，等价于图像中从上往下）；
+ *  - 乘客中心点从门线「内侧(B/下侧)」跨到「外侧(A/上侧)」= **上车**（B→A，等价于图像中从下往上）。
  *  若区域的 entryDirection == BottomToTop，则上述语义整体取反。
  */
 enum class ZoneEventType {
@@ -83,7 +83,7 @@ struct ZoneEvent {
     float zoneTopNormY{-1.0f};      // 等价区域上边界（门线两端最小 Y）
     float zoneBottomNormY{-1.0f};   // 等价区域下边界（门线两端最大 Y）
     float zoneCenterNormY{-1.0f};   // 门线在图像中的纵向位置（中点 Y）
-    float moveDy{0.0f};             // 终点-起点 的归一化纵向位移（正=向下/上车）
+    float moveDy{0.0f};             // 终点-起点 的归一化纵向位移（正=向下；默认向下=下车）
     int   trackFrames{0};           // 本次采样到的整段帧数
     qint64 durationMs{0};           // 接近→穿越耗时（毫秒）
     bool  suppressed{false};        // 是否被防误判规则抑制
@@ -107,7 +107,7 @@ struct ZoneEvent {
  * 侧别定义：normal 为单位法线（按构造始终指向图像下方 / Y 增大方向）。
  *   signedSide(p) = (p - a) · normal
  *   > 0 → B 侧（内侧/车门内）；< 0 → A 侧（外侧/车门外）。
- * 默认 entryDirection==TopToBottom 时：A→B 跨越 = 上车。
+ * 默认 entryDirection==TopToBottom 时：A→B（从上往下）跨越 = 下车。
  */
 struct DoorLine {
     int regionId{-1};
@@ -223,6 +223,8 @@ public:
     void setMinOverlapArea(float area);
     /// 「同人反向穿越」冷却窗口（毫秒）
     void setReverseCooldownMs(qint64 ms);
+    /// 「同人同方向重复穿越」冷却窗口（毫秒）：抑制门线附近逗留/抖动造成的重复上下车
+    void setSameDirCooldownMs(qint64 ms);
     /// 边界容差（归一化，兼容旧接口）
     void setEdgeMargin(float margin);
 
@@ -259,8 +261,17 @@ public:
                       RegionManager *regionManager,
                       int imgW, int imgH);
 
+    /**
+     * @brief 清空「活跃穿越追踪状态」（m_tracks/m_trackToVisitor/m_anchors），
+     *        用于视频判定跳帧回退重检时避免时间倒序污染穿越起点判定。
+     *        保留累计计数（boarding/alighting）、已登记 visitor 特征与防误判冷却。
+     */
+    void resetTracks();
+
     int boardingCount() const { return m_boardingCount; }
     int alightingCount() const { return m_alightingCount; }
+    /// 恢复累计计数（程序重启后不清零）
+    void setCounters(int boarding, int alighting);
     QVector<ZoneEvent> events() const { return m_events; }
 
     /// 重置所有计数和事件记录
@@ -280,6 +291,7 @@ private:
     int m_startConfirmFrames{1};
     float m_minOverlapArea{0.0012f};
     qint64 m_reverseCooldownMs{8000};
+    qint64 m_sameDirCooldownMs{30000};
     float m_edgeMargin{0.0f};
 
     // ===== DoorCounter v6 参数 =====

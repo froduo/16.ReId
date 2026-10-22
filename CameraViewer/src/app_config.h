@@ -11,11 +11,23 @@ struct AppConfig {
     QString cameraUser = "admin";
     QString cameraPass = "admin123";
     int cameraPort = 8554;
-    // 完整 RTSP URL（可手动覆盖）
+    // 完整 RTSP URL（默认由 IP/端口/用户名/密码 自动派生，见 rebuildRtspUrl）
     QString rtspUrl = "rtsp://192.168.99.10:8554/live/camera";
+    // RTSP URL 是否由用户「手动指定」：
+    //   false（默认）—— URL 始终由 IP/端口/用户名/密码 派生，保证「改 IP 即生效」；
+    //   true          —— 使用上面的自定义 rtspUrl，忽略 IP 等参数（高级用法）。
+    bool cameraRtspManual = false;
 
     // 主界面标题
     QString windowTitle = "HX-CCD23 人员检测 ReID 系统";
+
+    // ===== 下车方向持久化（下次启动默认加载上次选择）=====
+    // "TopToBottom"：从上往下 ↓（下车）；"BottomToTop"：从下往上 ↑（下车）
+    QString entryDirection = "TopToBottom";
+
+    // ===== Web 服务（手机端查看上下车状态）=====
+    bool webServerEnabled = true;
+    int  webServerPort = 8080;
 
     // ===== 图像保存参数 =====
     QString savePath = "./save_images";
@@ -27,8 +39,11 @@ struct AppConfig {
     QString modelPath = "./model/yolo26n_trt10_x86.engine";
     // 是否启用推理
     bool enableInference = true;
-    // 检测置信度阈值
-    float detectorConfThreshold = 0.45f;
+    // 检测置信度阈值。
+    // 【俯视场景召回】工厂 yolo26n 在本俯视场景对真实乘客的分数偏低
+    // （实测同一乘客 0.35~0.78），旧阈值 0.45 会漏检 → 下调至 0.30 提升召回；
+    // 误检由「尺寸 / 宽高比 / 静态抑制」三道过滤兜底；部署专用乘客模型后可再上调。
+    float detectorConfThreshold = 0.30f;
     // NMS 阈值
     float detectorNmsThreshold = 0.5f;
     // ===== 小目标过滤（以整幅图像尺寸为参考，默认针对 1920x1080）=====
@@ -41,9 +56,12 @@ struct AppConfig {
     // 绝对像素最小框（叠加在比例过滤之上；专治区域内小框误检）
     int   detectorMinBoxWidthPx = 30;
     int   detectorMinBoxHeightPx = 90;
-    // 宽高比(宽/高)合理区间：过细(竖条)/过扁(横条)均视为误检
-    float detectorMinBoxAspect = 0.12f;
-    float detectorMaxBoxAspect = 1.00f;
+    // 宽高比(宽/高)合理区间：过细(竖条)/过扁(横条)均视为误检。
+    // 【俯视场景】相机位于车门正上方，人形被压缩、检测框近方形
+    // （实测 person_43=305×307、本机 333×325，w/h≈0.99~1.03）；旧上限 1.00
+    // 会把 w/h 略大于 1 的真实乘客误杀 → 放宽为 [0.35, 3.00]（与 orbbec 工程一致）。
+    float detectorMinBoxAspect = 0.35f;
+    float detectorMaxBoxAspect = 3.00f;
 
     // ===== 最大尺寸上限（比例；1.0=不限制）：抑制超大静态误检框 =====
     // 空场景中固定物体被误检时，框通常远大于真实目标；head 头部框很小，
@@ -146,8 +164,21 @@ struct AppConfig {
     // 默认关闭：预训练 OSNet 在本俯视鱼眼场景下区分力尚未验证，
     // 需现场采集数据微调并标定阈值后再开启，避免误判回归。
     bool reidUseDeepReid = false;                                    // 是否启用深度 ReID
+    // 深度 ReID 推理后端：true=优先 CUDA(GPU)（把识别推理从 CPU 卸载到 GPU，
+    // 降低 CPU 占用、提升实时性；不可用时自动回退 CPU）；false=强制 CPU
+    bool reidDeepUseCuda = true;
     QString reidDeepModelPath = "./model/osnet_x1_0_msmt17.onnx";    // ONNX 模型路径
     float reidDeepMatchThreshold = 0.50f;                            // 深度特征余弦判定阈值
+    // ===== 上/下车文件夹全图比对（准确率优先，后台线程执行）=====
+    // 下车目录与该目录时间之前、且未标记的上车目录做全图深度 ReID 比对。
+    float reidFolderMatchThreshold = 0.60f;      // 目录级相似度判定阈值
+    // 目录级匹配的最小置信度差（最高分 - 次高分）。低于此值说明候选间区分度不足，
+    // 不判定匹配（避免相似乘客误匹配；宁可漏配、留待后续/人工复核）。
+    float reidFolderMatchMinMargin = 0.04f;
+    int   personSaveEveryN = 3;                  // 乘客出现期间每 N 帧保存 1 张裁剪原图
+    int   personMinTrackFrames = 3;              // 新乘客建档所需的最少真实检测帧数（预热）
+    int   personFolderMaxImages = 200;           // 单目录参与比对的最大图片数
+    int   personFolderQualityKeep = 15;          // 质量筛选：按清晰度保留的最多帧数（过滤模糊帧）
     // head 检测模型下：头框 → 人体框 的 ReID 裁剪扩展系数（1.0 表示不扩展）。
     // 深度 ReID 训练数据来自人体裁剪（visitor_V*），适度扩展可让头框裁剪更接近训练分布。
     float reidHeadBoxExpand = 1.35f;
@@ -191,6 +222,8 @@ struct AppConfig {
         s.setValue("Pass", cameraPass);
         s.setValue("Port", cameraPort);
         s.setValue("RTSP_URL", rtspUrl);
+        s.setValue("RTSP_Manual", cameraRtspManual);
+        s.setValue("EntryDirection", entryDirection);
         s.endGroup();
 
         // 显示设置
@@ -206,6 +239,12 @@ struct AppConfig {
         s.setValue("SavePath", savePath);
         s.setValue("SaveFormat", saveFormat);
         s.setValue("JpegQuality", jpegQuality);
+        s.endGroup();
+
+        // Web 服务
+        s.beginGroup("Web");
+        s.setValue("Enabled", webServerEnabled);
+        s.setValue("Port", webServerPort);
         s.endGroup();
 
         // 推理参数
@@ -268,8 +307,14 @@ struct AppConfig {
         s.setValue("SaveVideo", reidSaveVideo);
         s.setValue("ZoneMinDisplacement", static_cast<double>(zoneMinDisplacement));
         s.setValue("UseDeepReid", reidUseDeepReid);
+        s.setValue("DeepUseCuda", reidDeepUseCuda);
         s.setValue("DeepModelPath", reidDeepModelPath);
         s.setValue("DeepMatchThreshold", static_cast<double>(reidDeepMatchThreshold));
+        s.setValue("FolderMatchThreshold", static_cast<double>(reidFolderMatchThreshold));
+        s.setValue("PersonSaveEveryN", personSaveEveryN);
+        s.setValue("PersonMinTrackFrames", personMinTrackFrames);
+        s.setValue("PersonFolderMaxImages", personFolderMaxImages);
+        s.setValue("PersonFolderQualityKeep", personFolderQualityKeep);
         s.setValue("HeadBoxExpand", static_cast<double>(reidHeadBoxExpand));
         s.setValue("SavePath", reidSavePath);
         s.setValue("RegionSavePath", regionSavePath);
@@ -314,8 +359,19 @@ struct AppConfig {
         cameraUser = s.value("Camera/User", "admin").toString();
         cameraPass = s.value("Camera/Pass", "admin123").toString();
         cameraPort = s.value("Camera/Port", 8554).toInt();
-        rtspUrl = s.value("Camera/RTSP_URL",
-            "rtsp://192.168.99.10:8554/live/camera").toString();
+        // 是否手动指定 RTSP URL（缺省 false → 以相机 IP/端口为唯一事实来源）
+        cameraRtspManual = s.value("Camera/RTSP_Manual", false).toBool();
+        rtspUrl = s.value("Camera/RTSP_URL", QString()).toString();
+        // 关键修复：默认始终按「相机 IP + 端口 + 用户名 + 密码」重建 RTSP URL，
+        // 避免历史 config.ini 中残留的旧 RTSP_URL 覆盖用户新配置的相机 IP，
+        // 导致「改了 IP 但启动相机仍连旧地址」。仅当用户显式开启手动指定时才沿用自定义 URL。
+        if (!cameraRtspManual || rtspUrl.isEmpty()) {
+            rebuildRtspUrl();
+            cameraRtspManual = false;
+        }
+        entryDirection = s.value("Camera/EntryDirection", "TopToBottom").toString();
+        if (entryDirection != QLatin1String("BottomToTop"))
+            entryDirection = QLatin1String("TopToBottom");
 
         // 显示设置
         windowTitle = s.value("Display/WindowTitle", "HX-CCD23 人员检测 ReID 系统").toString();
@@ -331,16 +387,16 @@ struct AppConfig {
 
         // 推理参数
         enableInference = s.value("Inference/EnableInference", true).toBool();
-        modelPath = s.value("Inference/ModelPath", "./model/yolo26n_trt10_x86.engine").toString();
-        detectorConfThreshold = static_cast<float>(s.value("Inference/ConfThreshold", 0.45).toDouble());
+        modelPath = s.value("Inference/ModelPath", "./model/passenger_yolov8m_trt10_x86_20261022_093436.engine").toString();
+        detectorConfThreshold = static_cast<float>(s.value("Inference/ConfThreshold", 0.30).toDouble());
         detectorNmsThreshold = static_cast<float>(s.value("Inference/NmsThreshold", 0.5).toDouble());
         detectorSizeFilterEnabled = s.value("Inference/SizeFilterEnabled", true).toBool();
         detectorMinPersonHeightRatio = static_cast<float>(s.value("Inference/MinPersonHeightRatio", 0.08).toDouble());
         detectorMinPersonAreaRatio = static_cast<float>(s.value("Inference/MinPersonAreaRatio", 0.005).toDouble());
         detectorMinBoxWidthPx = s.value("Inference/MinBoxWidthPx", 30).toInt();
         detectorMinBoxHeightPx = s.value("Inference/MinBoxHeightPx", 90).toInt();
-        detectorMinBoxAspect = static_cast<float>(s.value("Inference/MinBoxAspect", 0.12).toDouble());
-        detectorMaxBoxAspect = static_cast<float>(s.value("Inference/MaxBoxAspect", 1.00).toDouble());
+        detectorMinBoxAspect = static_cast<float>(s.value("Inference/MinBoxAspect", 0.35).toDouble());
+        detectorMaxBoxAspect = static_cast<float>(s.value("Inference/MaxBoxAspect", 3.00).toDouble());
         detectorHeadMaxBoxWidthRatio = static_cast<float>(s.value("Inference/HeadMaxBoxWidthRatio", 0.40).toDouble());
         detectorHeadMaxBoxHeightRatio = static_cast<float>(s.value("Inference/HeadMaxBoxHeightRatio", 0.45).toDouble());
         detectorHeadMaxBoxAreaRatio = static_cast<float>(s.value("Inference/HeadMaxBoxAreaRatio", 0.12).toDouble());
@@ -365,7 +421,7 @@ struct AppConfig {
         detectorHeadMinBoxAspect = static_cast<float>(s.value("Inference/HeadMinBoxAspect", 0.50).toDouble());
         detectorHeadMaxBoxAspect = static_cast<float>(s.value("Inference/HeadMaxBoxAspect", 2.00).toDouble());
         detectorPreferOnnx = s.value("Inference/PreferOnnx", false).toBool();
-        detectorOnnxPath = s.value("Inference/OnnxPath", "./model/yolov8n.onnx").toString();
+        detectorOnnxPath = s.value("Inference/OnnxPath", "./model/passenger_yolov8m_trt10_x86_20261022_093436.onnx").toString();
         detectorDnnUseCuda = s.value("Inference/DnnUseCuda", true).toBool();
         detectorDnnInputSize = s.value("Inference/DnnInputSize", 640).toInt();
         detectorModelUrl = s.value("Inference/ModelUrl", "").toString();
@@ -387,8 +443,14 @@ struct AppConfig {
         reidSaveVideo = s.value("ReID/SaveVideo", true).toBool();
         zoneMinDisplacement = static_cast<float>(s.value("ReID/ZoneMinDisplacement", 0.04).toDouble());
         reidUseDeepReid = s.value("ReID/UseDeepReid", false).toBool();
+        reidDeepUseCuda = s.value("ReID/DeepUseCuda", true).toBool();
         reidDeepModelPath = s.value("ReID/DeepModelPath", "./model/osnet_x1_0_msmt17.onnx").toString();
         reidDeepMatchThreshold = static_cast<float>(s.value("ReID/DeepMatchThreshold", 0.50).toDouble());
+        reidFolderMatchThreshold = static_cast<float>(s.value("ReID/FolderMatchThreshold", 0.60).toDouble());
+        personSaveEveryN = s.value("ReID/PersonSaveEveryN", 3).toInt();
+        personMinTrackFrames = s.value("ReID/PersonMinTrackFrames", 3).toInt();
+        personFolderMaxImages = s.value("ReID/PersonFolderMaxImages", 200).toInt();
+        personFolderQualityKeep = s.value("ReID/PersonFolderQualityKeep", 15).toInt();
         reidHeadBoxExpand = static_cast<float>(s.value("ReID/HeadBoxExpand", 1.35).toDouble());
         reidSavePath = s.value("ReID/SavePath", "./save_images/reid").toString();
         regionSavePath = s.value("ReID/RegionSavePath", "./regions.json").toString();
@@ -412,15 +474,22 @@ struct AppConfig {
         currentStationId = s.value("TripDb/StationId", "STATION-01").toString();
         currentStationName = s.value("TripDb/StationName", "1号站").toString();
 
+        // Web 服务
+        webServerEnabled = s.value("Web/Enabled", true).toBool();
+        webServerPort = s.value("Web/Port", 8080).toInt();
+
         // 更新参数
         updateUrl = s.value("Update/UpdateUrl").toString();
     }
 
-    /// 根据 IP/User/Pass/Port 重建 RTSP URL
-    void rebuildRtspUrl() {
-        rtspUrl = QString("rtsp://%1:%2@%3:%4/live/camera")
+    /// 根据 IP/User/Pass/Port 生成 RTSP URL（不修改成员变量）
+    QString derivedRtspUrl() const {
+        return QString("rtsp://%1:%2@%3:%4/live/camera")
             .arg(cameraUser, cameraPass, cameraIP).arg(cameraPort);
     }
+
+    /// 根据 IP/User/Pass/Port 重建 RTSP URL
+    void rebuildRtspUrl() { rtspUrl = derivedRtspUrl(); }
 };
 
 #endif // APP_CONFIG_H

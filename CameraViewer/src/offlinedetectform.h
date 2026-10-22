@@ -27,8 +27,8 @@ class QTimer;
  * @brief 离线图像检测窗口
  *
  * 除检测/跟踪外，复用 ZoneMonitor 的通道状态机对**多张连续图片**做方向判定：
- *   - 人从上往下穿过检测区域：进入侧=A(顶)、离开侧=B(底) → **上车**
- *   - 人从下往上穿过检测区域：进入侧=B(底)、离开侧=A(顶) → **下车**
+ *   - 人从上往下穿过检测区域：进入侧=A(顶)、离开侧=B(底) → **下车**
+ *   - 人从下往上穿过检测区域：进入侧=B(底)、离开侧=A(顶) → **上车**
  * 连续检测时按图片顺序逐帧喂给 ZoneMonitor（tracker 状态在多次检测间保持）。
  */
 class OfflineDetectForm : public QDialog
@@ -66,7 +66,7 @@ private slots:
 
 private:
     void setupUI();
-    void processFrameInternal(const cv::Mat &frame); // 检测+跟踪+区域方向+显示
+    bool processFrameInternal(const cv::Mat &frame); // 检测+跟踪+区域方向+显示；返回本帧是否检测到人
     /// 结束视频判定：停止定时器、释放视频、统计并给出结论
     void finishVideoDetect(const QString &reason);
     void displayResult(const cv::Mat &frame,
@@ -143,7 +143,7 @@ private:
     int m_currentIndex{-1};
 
     // 方向判定结果
-    QMap<int, QString> m_trackDirection; // trackId -> "上车(从上往下)" / "下车(从下往上)"
+    QMap<int, QString> m_trackDirection; // trackId -> "上车(从下往上)" / "下车(从上往下)"
     int m_boardCount{0};
     int m_alightCount{0};
 
@@ -151,7 +151,8 @@ private:
     QTimer *m_videoTimer{nullptr};
     cv::VideoCapture m_videoCap;
     QString m_videoPath;
-    int m_videoStep{1};          // 抽帧步长（限制每秒刷新/检测帧数）
+    int m_videoDetectSkip{1};       // 检测跳帧步长：有人=1逐帧检测；无人逐渐增大（真正加速扫空场景）
+    int m_videoNoPersonFrames{0};   // 连续无人检测次数（用于自适应加大检测跳帧步长）
     double m_videoFps{25.0};
     int m_videoFrameIdx{0};      // 已读取的原始帧序号
     int m_videoProcessed{0};     // 已处理（检测）的帧数

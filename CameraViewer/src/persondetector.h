@@ -24,6 +24,9 @@ public:
     QVector<Detection> detectAll(const cv::Mat &frame);
     bool isLoaded() const;
 
+    /// 当前置信度阈值（用于日志/诊断，判断“为何检测不到人”）
+    float confThreshold() const { return m_confThreshold; }
+
     /// 是否使用 TensorRT 后端
     bool isTrtBackend() const { return m_useTrt; }
 
@@ -63,10 +66,11 @@ public:
     void setMinBoxSizePx(int minWidth, int minHeight);
 
     /**
-     * @brief 设置人体框宽高比（宽/高）合理区间，默认 0.12 ~ 1.00
+     * @brief 设置人体框宽高比（宽/高）合理区间，默认 0.35 ~ 3.00
      *
-     * 站立/行走的人体通常 0.2~0.6；过细（<0.12，竖条状误检）或
-     * 过扁（>1.0，横向误检/多目标粘连）都视为不合理并丢弃。
+     * 【俯视场景】相机在车门正上方，人形被压缩、检测框近方形（w/h≈1.0，
+     * 实测 305×307、333×325），故上限放宽到 3.00，避免把近方形乘客框误杀；
+     * 下限 0.35 用于过滤竖条状误检。（站立/正面视角人体约 0.2~0.6，可再收紧。）
      */
     void setBoxAspectRange(float minAspect, float maxAspect);
 
@@ -122,8 +126,8 @@ private:
     // 绝对像素尺寸与宽高比（叠加过滤，专治区域内小框误检）
     int   m_minBoxWidthPx{30};
     int   m_minBoxHeightPx{90};
-    float m_minAspect{0.12f};
-    float m_maxAspect{1.00f};
+    float m_minAspect{0.35f};
+    float m_maxAspect{3.00f};
 
     // 框最大尺寸上限（比例；1.0=不限制）——抑制超大静态误检
     float m_maxWidthRatio{1.0f};

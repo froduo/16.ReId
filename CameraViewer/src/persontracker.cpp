@@ -116,6 +116,13 @@ PersonTracker::PersonTracker(float iouThreshold, int maxMissed)
 {
 }
 
+void PersonTracker::reset()
+{
+    m_tracks.clear();
+    m_lostGallery.clear();
+    // m_nextId 保持递增：避免与 OfflineDetectForm 中残留的轨迹统计（按 trackId 索引）冲突
+}
+
 float PersonTracker::computeIoU(const cv::Rect &a, const cv::Rect &b)
 {
     cv::Rect intersection = a & b;

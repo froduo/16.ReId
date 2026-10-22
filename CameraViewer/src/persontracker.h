@@ -105,6 +105,9 @@ public:
     QVector<TrackedPerson> getActiveTracks() const;
     TrackedPerson *getTrack(int trackId);
 
+    /// 清空所有活跃轨迹与丢失画廊（视频判定跳帧回退重检时重置状态）
+    void reset();
+
     // ===== 配置接口 =====
     void setIouThreshold(float threshold) { m_iouThreshold = threshold; }
     void setMaxMissed(int maxMissed) { m_maxMissed = maxMissed; }

@@ -51,7 +51,7 @@ public:
         // 上车/下车抓拍图片路径
         QString enterImagePath; // = 上车图片路径
         QString exitImagePath;  // = 下车图片路径
-        // 方向："boarding"(上车:从上往下), "alighting"(下车:从下往上), ""(未确定)
+        // 方向："boarding"(上车:从下往上), "alighting"(下车:从上往下), ""(未确定)
         QString direction;
     };
 
