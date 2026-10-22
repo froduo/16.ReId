@@ -5,25 +5,16 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 CONFIG += c++17
 TARGET = CameraViewer_orbbec
 
-# 启用 OpenCV CUDA 加速（背景分割、特征比对等）
-DEFINES += USE_OPENCV_CUDA
-
-# =========================================================
-# OrbbecSDK v2（Gemini 335 深度相机）
-# =========================================================
-ORBBEC_SDK_DIR = $$PWD/third_party/OrbbecSDK_v2.10.6_202609291004_575347c_linux_x86_64
-INCLUDEPATH += $$ORBBEC_SDK_DIR/include
-LIBS += -L$$ORBBEC_SDK_DIR/lib -lOrbbecSDK
-# 运行时库搜索路径（免设 LD_LIBRARY_PATH）
-QMAKE_RPATHDIR += $$ORBBEC_SDK_DIR/lib
-QMAKE_RPATHDIR += $$ORBBEC_SDK_DIR/lib/extensions/filters
-QMAKE_RPATHDIR += $$ORBBEC_SDK_DIR/lib/extensions/depthengine
+# 启用 OpenCV CUDA 加速（背景分割等）；若本机 OpenCV 未编译 CUDA 可注释掉本行
+#DEFINES += USE_OPENCV_CUDA  # 88deploy: OpenCV CUDA only sm_61, RTX2060 sm_75 unsupported
 
 SOURCES += \
     src/main.cpp \
     src/cameracontroller.cpp \
-    src/orbbecsource.cpp \
+    src/frameslot.cpp \
     src/grabthread.cpp \
+    src/depthgrabthread.cpp \
+    src/detectthread.cpp \
     src/imageview.cpp \
     src/overlaytext.cpp \
     src/mainwindow.cpp \
@@ -32,6 +23,7 @@ SOURCES += \
     src/persontracker.cpp \
     src/reidextractor.cpp \
     src/reiddeep.cpp \
+    src/trt_reid.cpp \
     src/backgroundmodel.cpp \
     src/regionmanager.cpp \
     src/trt_yolo.cpp \
@@ -41,14 +33,19 @@ SOURCES += \
     src/passengerbook.cpp \
     src/identitymatchworker.cpp \
     src/zonemonitor.cpp \
+    src/personfolder.cpp \
+    src/foldermatchworker.cpp \
+    src/statuswebserver.cpp \
     src/tripdatastore.cpp
 
 HEADERS += \
     src/version.h \
     src/app_config.h \
     src/cameracontroller.h \
-    src/orbbecsource.h \
+    src/frameslot.h \
     src/grabthread.h \
+    src/depthgrabthread.h \
+    src/detectthread.h \
     src/imageview.h \
     src/overlaytext.h \
     src/logger.h \
@@ -58,6 +55,7 @@ HEADERS += \
     src/persontracker.h \
     src/reidextractor.h \
     src/reiddeep.h \
+    src/trt_reid.h \
     src/backgroundmodel.h \
     src/regionmanager.h \
     src/trt_yolo.h \
@@ -67,6 +65,9 @@ HEADERS += \
     src/passengerbook.h \
     src/identitymatchworker.h \
     src/zonemonitor.h \
+    src/personfolder.h \
+    src/foldermatchworker.h \
+    src/statuswebserver.h \
     src/tripdatastore.h \
     src/hungarian.h
 
@@ -87,11 +88,7 @@ LIBS += \
     -lopencv_imgcodecs \
     -lopencv_videoio \
     -lopencv_dnn \
-    -lopencv_video \
-    -lopencv_cudaarithm \
-    -lopencv_cudaimgproc \
-    -lopencv_cudafilters \
-    -lopencv_cudawarping
+    -lopencv_video
 
 # =========================================================
 # TensorRT & CUDA
@@ -109,7 +106,7 @@ LIBS += \
 
 # =========================================================
 # 模型文件复制到输出目录
-#  - 检测：head 数据集训练的 YOLO11n 头部检测（单类 head）
+#  - 检测：passenger_yolov8n 人体检测（单类 person，与 CameraViewer 一致）
 #  - ReID：现场数据微调的 OSNet x1.0（4D 输出，DeepReID 兼容）
 # =========================================================
 MODEL_DEST_DIR = $$OUT_PWD/model

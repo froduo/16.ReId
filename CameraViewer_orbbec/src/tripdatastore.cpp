@@ -132,6 +132,11 @@ bool SqlTripStore::createTables(QString *error)
         QStringLiteral("CREATE TABLE IF NOT EXISTS passenger_events ("
                        "seq %1, trip_id TEXT, station_id TEXT, station_name TEXT, "
                        "passenger_id TEXT, event_type TEXT, recorded_at TEXT)")
+            .arg(seqType),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS reid_matches ("
+                       "seq %1, trip_id TEXT, board_person_id TEXT, board_folder TEXT, "
+                       "alight_person_id TEXT, alight_folder TEXT, similarity REAL, "
+                       "matched_at TEXT)")
             .arg(seqType)
     };
 
@@ -339,6 +344,43 @@ bool SqlTripStore::recordAlighting(const QString &tripId, const QString &station
                           QStringLiteral("ALIGHTING"), time, error);
 }
 
+bool SqlTripStore::recordReidMatch(const QString &tripId,
+                                   const QString &boardPersonId, const QString &boardFolder,
+                                   const QString &alightPersonId, const QString &alightFolder,
+                                   double similarity, const QDateTime &time, QString *error)
+{
+    if (!m_open) {
+        if (error) *error = QStringLiteral("存储未打开");
+        return false;
+    }
+
+    const QDateTime ts = time.isValid() ? time : QDateTime::currentDateTime();
+
+    QSqlDatabase db = QSqlDatabase::database(m_connName);
+    QSqlQuery q(db);
+    q.prepare(QStringLiteral("INSERT INTO reid_matches(trip_id, board_person_id, board_folder, "
+                             "alight_person_id, alight_folder, similarity, matched_at) "
+                             "VALUES(?,?,?,?,?,?,?)"));
+    q.addBindValue(tripId);
+    q.addBindValue(boardPersonId);
+    q.addBindValue(boardFolder);
+    q.addBindValue(alightPersonId);
+    q.addBindValue(alightFolder);
+    q.addBindValue(similarity);
+    q.addBindValue(ts.toString(Qt::ISODateWithMs));
+    if (!q.exec()) {
+        const QString msg = QStringLiteral("写入重识别匹配失败: %1").arg(q.lastError().text());
+        if (error) *error = msg;
+        LOG_WARN("[TripDataStore] " + msg);
+        return false;
+    }
+
+    LOG_INFO(QString("[TripDataStore] REID_MATCH: %1 ↔ %2 (sim=%3) 已落库")
+                 .arg(boardPersonId, alightPersonId)
+                 .arg(similarity, 0, 'f', 4));
+    return true;
+}
+
 QVector<StopStat> SqlTripStore::stopStats(const QString &tripId) const
 {
     QVector<StopStat> out;
@@ -380,6 +422,17 @@ int SqlTripStore::onboardCount(const QString &tripId) const
 {
     if (m_liveOnboard.contains(tripId)) return m_liveOnboard.value(tripId);
     return loadOnboardFromDb(tripId);
+}
+
+QString SqlTripStore::lastTrip() const
+{
+    if (!m_open) return QString();
+    QSqlDatabase db = QSqlDatabase::database(m_connName);
+    QSqlQuery q(db);
+    q.prepare(QStringLiteral("SELECT trip_id FROM trips "
+                             "ORDER BY started_at DESC LIMIT 1"));
+    if (q.exec() && q.next()) return q.value(0).toString();
+    return QString();
 }
 
 StopStat SqlTripStore::currentStop(const QString &tripId) const

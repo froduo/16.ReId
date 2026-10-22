@@ -10,7 +10,7 @@
  *
  * 背景：OpenCV 的 cv::putText 只支持 Hershey 矢量字体（ASCII），
  * 传入中文会全部渲染成 "?????"，这正是主界面门线标签
- * 「DOOR 上车↓」与离线检测框标签「ID:5 上车」出现问号的原因。
+ * 「DOOR 下车↓」与离线检测框标签「ID:5 上车」出现问号的原因。
  *
  * 本工具借助 QImage + QPainter 渲染文本（QPainter 支持 Unicode 与 CJK 字体），
  * 再写回 BGR cv::Mat，从而正确显示中文。

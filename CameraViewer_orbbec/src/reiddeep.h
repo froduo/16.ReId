@@ -5,6 +5,9 @@
 #include <QString>
 #include <opencv2/opencv.hpp>
 
+class TrtReid;     // TensorRT ReID 推理（GPU，见 trt_reid.h）
+class TrtLogger;   // TensorRT 日志记录器（见 trt_yolo.h）
+
 /**
  * @brief 深度行人重识别（OSNet x1.0 / MSMT17 预训练），基于 OpenCV DNN 推理
  *
@@ -20,6 +23,7 @@ class DeepReID
 {
 public:
     DeepReID();
+    ~DeepReID();
 
     /// 加载 ONNX 模型；成功返回 true
     bool load(const QString &onnxPath);
@@ -27,10 +31,6 @@ public:
     bool ready() const { return m_ready; }
     /// 当前模型路径
     QString modelPath() const { return m_path; }
-    /// 当前是否实际运行在 CUDA(GPU) 上（load() 之后有效）
-    bool cudaActive() const { return m_cudaActive; }
-    /// 是否允许使用 CUDA（需在 load() 之前调用；不可用时自动回退 CPU）。默认 true
-    void setUseCuda(bool v) { m_useCuda = v; }
 
     /// 提取人体框特征（1×512 CV_32F，L2 归一化）；失败返回空 Mat
     cv::Mat embed(const cv::Mat &frame, const cv::Rect &personBox);
@@ -40,12 +40,22 @@ public:
 
     static int featureDim() { return 512; }
 
+    /// 是否优先使用 GPU 后端（需在 load() 前设置；不可用时自动回退 CPU）
+    void setPreferableBackend(bool useCuda) { m_preferCuda = useCuda; }
+    /// 当前是否实际运行在 GPU 上（TensorRT 或 OpenCV-CUDA）
+    bool cudaActive() const { return m_trt != nullptr || m_cudaActive; }
+    /// 当前实际推理后端名（"TensorRT(GPU)" / "CUDA(GPU)" / "CPU"）
+    QString backendName() const { return m_backend; }
+
 private:
     mutable QMutex m_mutex;   // cv::dnn::Net::forward 非线程安全
     cv::dnn::Net m_net;
     bool m_ready{false};
-    bool m_cudaActive{false}; // 是否实际运行在 CUDA(GPU)
-    bool m_useCuda{true};     // 是否允许使用 CUDA（默认允许，不可用则回退 CPU）
+    bool m_preferCuda{true};    // 优先 GPU 后端
+    bool m_cudaActive{false};   // OpenCV DNN CUDA 后端是否生效
+    QString m_backend{QStringLiteral("CPU")};  // 实际生效的后端名
+    TrtReid   *m_trt{nullptr};        // TensorRT ReID（优先，落 GPU）
+    TrtLogger *m_trtLogger{nullptr};  // TrtReid 生命周期内必须存活
     QString m_path;
 };
 

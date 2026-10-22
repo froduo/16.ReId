@@ -14,9 +14,9 @@
 #include <QStringList>
 #include <algorithm>
 
-// 方向判定约定（与在线一致）：
-//   人从上往下穿过检测区域：进入侧=A(顶) → 离开侧=B(底)  => 上车
-//   人从下往上穿过检测区域：进入侧=B(底) → 离开侧=A(顶)  => 下车
+// 方向判定约定（与在线一致）——【相机装反 / 视角反转后的新定义】：
+//   人从上往下穿过检测区域：进入侧=A(顶) → 离开侧=B(底)  => 下车
+//   人从下往上穿过检测区域：进入侧=B(底) → 离开侧=A(顶)  => 上车
 
 OfflineDetectForm::OfflineDetectForm(PersonDetector *detector,
                                      RegionManager *regionManager,
@@ -65,11 +65,11 @@ OfflineDetectForm::OfflineDetectForm(PersonDetector *detector,
     m_zoneMonitor->setStartConfirmFrames(1);
     m_zoneMonitor->setReverseCooldownMs(0);
 
-    // 上车：A→B（从上往下）
+    // 上车：B→A（从下往上）
     connect(m_zoneMonitor, &ZoneMonitor::boardingEvent, this, [this](const ZoneEvent &evt) {
         m_boardCount++;
-        m_trackDirection[evt.trackId] = QStringLiteral("上车 ↓(从上往下)");
-        LOG_INFO(QString("[OfflineDetect] ★ 上车: track=%1, A(顶)→B(底), enter=%2, exit=%3")
+        m_trackDirection[evt.trackId] = QStringLiteral("上车 ↑(从下往上)");
+        LOG_INFO(QString("[OfflineDetect] ★ 上车: track=%1, B(底)→A(顶), enter=%2, exit=%3")
                      .arg(evt.trackId)
                      .arg(evt.enterTime.toString("HH:mm:ss.zzz"))
                      .arg(evt.exitTime.toString("HH:mm:ss.zzz")));
@@ -78,11 +78,11 @@ OfflineDetectForm::OfflineDetectForm(PersonDetector *detector,
                                      .arg(m_boardCount).arg(m_alightCount));
     });
 
-    // 下车：B→A（从下往上）
+    // 下车：A→B（从上往下）
     connect(m_zoneMonitor, &ZoneMonitor::alightingEvent, this, [this](const ZoneEvent &evt) {
         m_alightCount++;
-        m_trackDirection[evt.trackId] = QStringLiteral("下车 ↑(从下往上)");
-        LOG_INFO(QString("[OfflineDetect] ★ 下车: track=%1, B(底)→A(顶), enter=%2, exit=%3")
+        m_trackDirection[evt.trackId] = QStringLiteral("下车 ↓(从上往下)");
+        LOG_INFO(QString("[OfflineDetect] ★ 下车: track=%1, A(顶)→B(底), enter=%2, exit=%3")
                      .arg(evt.trackId)
                      .arg(evt.enterTime.toString("HH:mm:ss.zzz"))
                      .arg(evt.exitTime.toString("HH:mm:ss.zzz")));
@@ -392,7 +392,7 @@ void OfflineDetectForm::onBatchDetect()
                  .arg(m_boardCount).arg(m_alightCount));
 
     QMessageBox::information(this, "连续检测完成",
-        QString("连续检测完成。\n\n上车（从上往下）：%1 次\n下车（从下往上）：%2 次")
+        QString("连续检测完成。\n\n上车（从下往上）：%1 次\n下车（从上往下）：%2 次")
             .arg(m_boardCount).arg(m_alightCount));
 }
 
@@ -569,8 +569,8 @@ void OfflineDetectForm::finishVideoDetect(const QString &reason)
             if (std::fabs(dy) > std::fabs(bestDy)) { bestDy = dy; bestTid = it.key(); }
         }
         if (bestTid > 0 && std::fabs(bestDy) >= needDy) {
-            strictVerdict = (bestDy < 0.0f) ? QStringLiteral("下车（方向判定）")
-                                            : QStringLiteral("上车（方向判定）");
+            strictVerdict = (bestDy < 0.0f) ? QStringLiteral("上车（方向判定）")
+                                            : QStringLiteral("下车（方向判定）");
             looseDetail = QString("%1, ID%2 首末 y %3→%4 (dy=%5)")
                               .arg(bestDy < 0.0f ? QStringLiteral("由下往上")
                                                  : QStringLiteral("由上往下"))
@@ -616,7 +616,7 @@ void OfflineDetectForm::finishVideoDetect(const QString &reason)
     if (m_regionManager) {
         const auto regions = m_regionManager->regions();
         if (regions.isEmpty()) {
-            coverage += QStringLiteral("检测区域：未配置（请先在主界面绘制检测区域）\n");
+            coverage += QStringLiteral("上下车分界线：未配置（请先在主界面绘制上下车分界线）\n");
         }
         for (const auto &r : regions) {
             float minX = 2.0f, maxX = -1.0f, minY = 2.0f, maxY = -1.0f;
@@ -712,8 +712,42 @@ void OfflineDetectForm::processFrameInternal(const cv::Mat &frame)
 {
     if (frame.empty() || !m_detector || !m_detector->isLoaded()) return;
 
-    // 检测（仅 person 类别，含小目标过滤）
+    // ===== 离线检测日志（诊断）：输出“检测当前图片”的完整过程 =====
+    const QString imgName = m_currentImagePath.isEmpty()
+                                ? QStringLiteral("(内嵌图像)")
+                                : QFileInfo(m_currentImagePath).fileName();
+    LOG_INFO(QString("[OfflineDetect] ===== 检测当前图片: %1 (%2x%3) | 置信度阈值=%4 =====")
+                 .arg(imgName).arg(frame.cols).arg(frame.rows)
+                 .arg(m_detector->confThreshold(), 0, 'f', 2));
+
+    // 1) 原始检测（低阈值 0.05、含全部类别）：用于定位“为何检测不到人”
+    const QVector<Detection> rawDets = m_detector->detectAll(frame);
+    LOG_INFO(QString("[OfflineDetect] 原始检测(score>=0.05，未过滤): %1 个").arg(rawDets.size()));
+    for (const Detection &d : rawDets) {
+        const cv::Rect box(d.x, d.y, d.w, d.h);
+        const bool pass = (d.class_id == 0) && m_detector->passSizeFilter(box, frame.cols, frame.rows);
+        const double asp = (d.h > 0) ? static_cast<double>(d.w) / d.h : 0.0;
+        LOG_INFO(QString("[OfflineDetect]   raw: class=%1 score=%2 box=(%3,%4,%5x%6) w/h=%7 %8")
+                     .arg(d.class_id).arg(d.score, 0, 'f', 3)
+                     .arg(d.x).arg(d.y).arg(d.w).arg(d.h)
+                     .arg(asp, 0, 'f', 2)
+                     .arg(d.class_id == 0
+                              ? (pass ? QStringLiteral("→可保留")
+                                      : QStringLiteral("→被尺寸/宽高比过滤"))
+                              : QStringLiteral("→非 person 类别，忽略")));
+    }
+
+    // 2) 过滤后检测（person 类别 + 尺寸/宽高比过滤 + 静态误检抑制）
     QVector<cv::Rect> detections = m_detector->detect(frame);
+    LOG_INFO(QString("[OfflineDetect] 过滤后有效人体框: %1 个").arg(detections.size()));
+    for (const cv::Rect &d : detections) {
+        LOG_INFO(QString("[OfflineDetect]   keep: box=(%1,%2,%3x%4)")
+                     .arg(d.x).arg(d.y).arg(d.width).arg(d.height));
+    }
+    if (detections.isEmpty()) {
+        LOG_WARN(QString("[OfflineDetect] 当前图片 0 个有效人体框：可能因置信度低于阈值 / "
+                         "类别非 person / 尺寸或宽高比被过滤 / 静态误检抑制"));
+    }
 
     // 统计人物轨迹范围（归一化中心点），用于结论中与检测区域对比
     for (const cv::Rect &d : detections) {
@@ -728,6 +762,18 @@ void OfflineDetectForm::processFrameInternal(const cv::Mat &frame)
 
     // 跟踪 + ReID 特征（3参重载会维护 prevCenter 与 reidFeature）
     QVector<TrackedPerson> persons = m_tracker->update(detections, frame, m_reidExtractor);
+
+    // 3) 跟踪轨迹日志：区分真实检测框与卡尔曼预测外推框
+    LOG_INFO(QString("[OfflineDetect] 跟踪轨迹: %1 条").arg(persons.size()));
+    for (const TrackedPerson &tp : persons) {
+        LOG_INFO(QString("[OfflineDetect]   track ID=%1 detected=%2 bbox=(%3,%4,%5x%6) "
+                         "age=%7 missed=%8 center=(%9,%10)")
+                     .arg(tp.trackId)
+                     .arg(tp.detected ? QStringLiteral("true") : QStringLiteral("false"))
+                     .arg(tp.bbox.x).arg(tp.bbox.y).arg(tp.bbox.width).arg(tp.bbox.height)
+                     .arg(tp.age).arg(tp.missedFrames)
+                     .arg(tp.center.x, 0, 'f', 1).arg(tp.center.y, 0, 'f', 1));
+    }
 
     // 统计每条轨迹的 y 范围与首/末 y（只统计真实检测框，忽略卡尔曼预测漂移）
     for (const TrackedPerson &tp : persons) {
@@ -748,7 +794,7 @@ void OfflineDetectForm::processFrameInternal(const cv::Mat &frame)
     int imgW = frame.cols;
     int imgH = frame.rows;
 
-    // 通道方向判定（与在线一致：A→B 上车，B→A 下车）
+    // 通道方向判定（与在线一致：A→B 下车，B→A 上车）
     if (m_zoneMonitor && m_regionManager) {
         refreshZoneMonitor();
         m_zoneMonitor->processFrame(persons, frame, m_regionManager, imgW, imgH);

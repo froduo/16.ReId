@@ -7,10 +7,11 @@
 #include <QString>
 #include <QColor>
 
-// 进入方向枚举
+// 门线方向枚举（决定门线穿越 → 上/下车的映射）
+// 【相机装反 / 视角反转后的新定义】：A→B(从上往下)=下车，B→A(从下往上)=上车
 enum class EntryDirection {
-    TopToBottom,    // 从上往下进入（= 上车）
-    BottomToTop     // 从下往上进入（= 下车）
+    TopToBottom,    // 默认：从上往下(A→B) = 下车，从下往上(B→A) = 上车
+    BottomToTop     // 取反：从下往上(B→A) = 下车，从上往下(A→B) = 上车
 };
 
 // 区域几何形态
@@ -30,7 +31,7 @@ struct DetectionRegion {
     QPointF lineEnd;           // 门线终点
     QString name;
     QColor color;
-    EntryDirection entryDirection = EntryDirection::TopToBottom; // 默认从上往下(上车)
+    EntryDirection entryDirection = EntryDirection::TopToBottom; // 默认：从上往下(A→B)=下车
 
     /// 是否显式配置了一条有效门线
     bool hasExplicitLine() const {
@@ -46,6 +47,8 @@ public:
     void addRegion(const DetectionRegion &region);
     void removeRegion(int id);
     void clearRegions();
+    /// 统一修改所有区域的进入方向（切换「下车方向」下拉框时同步，避免界面设置与区域判定不一致）
+    void setAllEntryDirection(EntryDirection dir);
     /// 返回区域列表（const 引用：避免返回临时量被误绑定引用导致悬垂）
     const QVector<DetectionRegion> &regions() const;
 

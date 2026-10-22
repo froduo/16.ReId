@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QDateTime>
+#include <QJsonArray>
 #include <QMutex>
 #include <QMap>
 #include <QSet>
@@ -20,6 +21,9 @@
 #include <opencv2/opencv.hpp>
 #include "cameracontroller.h"
 #include "grabthread.h"
+#include "detectthread.h"
+#include "depthgrabthread.h"
+#include "frameslot.h"
 #include "app_config.h"
 #include "imageview.h"
 #include "saveimageworker.h"
@@ -36,12 +40,15 @@
 #include "passengerbook.h"
 #include "identitymatchworker.h"
 #include "tripdatastore.h"
+#include "personfolder.h"
+#include "foldermatchworker.h"
 #include "version.h"
 #include "backgroundmodel.h"
 #include <QThread>
 
 class QNetworkAccessManager;
 class QSplitter;
+class StatusWebServer;
 
 namespace Ui {
 class MainWindow;
@@ -78,6 +85,14 @@ struct PendingAlight {
     QVector<cv::Mat> feats;     // 探测特征序列（已组装）
 };
 
+// 人员进出记录行：一次上/下车事件，乘客ID 与保存图片目录 person_N_日期 对应
+struct PersonEventRow {
+    int personId{-1};           // person 序号
+    QString status;             // "上车" / "下车"
+    int matchedPersonId{-1};    // 匹配到的对方 person 序号（未匹配=-1）
+    float similarity{0.0f};
+};
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -88,8 +103,9 @@ public:
 
 private slots:
     void onToggleCapture();
+    void onSelectVideo();
     void onFrameGrabbed(QImage img);
-    /// Orbbec 深度伪彩帧（CV_16U → 伪彩 QImage）到深度视图
+    /// 深度流伪彩帧到深度视图
     void onDepthFrameGrabbed(QImage img);
     void onGrabThreadDeviceLost();
     void onTryReconnect();
@@ -100,7 +116,7 @@ private slots:
     // 检测 / ReID 相关
     void onFrameProcessed(QImage img, QVector<TrackedPerson> persons);
     void onDrawRegion();
-    void onClearRegions();
+    void onClearCounts();
     void onPolygonCompleted(QVector<QPointF> points);
     void onOfflineDetect();
     void onSetParams();
@@ -117,10 +133,14 @@ private:
 
     // 相机
     CameraController m_camera;
-    GrabThread* m_grabThread{nullptr};
+    LatestFrameSlot* m_frameSlot{nullptr};       // RGB 采集线程 → 检测线程的最新帧槽
+    GrabThread* m_grabThread{nullptr};           // RGB 拉流线程
+    DetectThread* m_detectThread{nullptr};       // 检测线程
+    DepthGrabThread* m_depthThread{nullptr};     // 深度拉流线程
 
     // 采集状态
     bool m_isCapturing{false};
+    bool m_videoMode{false};        // 当前是否处于「视频文件检测」模式
     void updateCaptureStatus();
 
     // FPS 计算
@@ -130,6 +150,11 @@ private:
     double m_currentFps{0.0};
     static constexpr int UI_UPDATE_INTERVAL_MS = 33; // ~30fps UI refresh
 
+    // 深度流 FPS 计算
+    QElapsedTimer m_depthFpsTimer;
+    int m_depthFpsFrameCount{0};
+    double m_currentDepthFps{0.0};
+
     // 当前帧（用于手动保存）
     QImage m_currentFrame;
     QMutex m_frameMutex;
@@ -138,11 +163,15 @@ private:
     cv::Mat m_currentRawFrame;
     QMutex m_rawFrameMutex;
 
+    // 深度伪彩帧缓存（与 RGB 图像一同保存到「深度图」文件夹）
+    QImage m_currentDepthImage;
+    QMutex m_depthImageMutex;
+
     // 主界面 ImageView
     ImageView* m_imageView{nullptr};
-    // 深度伪彩视图（Orbbec 深度相机模式；与彩色视图左右分屏）
+    // 深度伪彩视图（深度流；与彩色视图左右分屏）
     ImageView* m_depthView{nullptr};
-    /// 承载「彩色 + 深度」的水平分屏器（可拖动分隔条；深度不可用时仅显示彩色）
+    /// 承载「彩色 + 深度」的水平分屏器
     QSplitter* m_mediaSplitter{nullptr};
 
     // 自动保存
@@ -185,6 +214,8 @@ private:
 
     // ===== 访客身份管理（ReID 跨 track 匹配）=====
     QMap<int, VisitorRecord> m_visitors;   // visitorId -> VisitorRecord
+    QVector<PersonEventRow> m_personEventRows;   // 上下车事件行（表格用）
+    QSet<int> m_activePersonIds;                 // 当前仍在画面中的 person 序号（用于关闭消失乘客的视频）
     int m_nextVisitorId{1};
     // ReID 匹配阈值现由 m_config.reidMatchThreshold 控制（可在系统配置中调整）
 
@@ -216,6 +247,46 @@ private:
     void applyAlightingMatch(const PendingAlight &pend, int bestId,
                              float similarity, bool matched);
 
+    // ===== 按乘客分目录的图像归档 + 后台整目录全图比对 =====
+    /// 上车目录登记（供下车目录做时间过滤 + 未匹配过滤）
+    struct BoardFolderEntry {
+        int personId{-1};
+        QString dir;
+        qint64 timeMs{0};
+        bool matched{false};
+    };
+    /// 一次「下车目录 vs 上车目录」后台比对任务的暂存信息
+    struct FolderMatchPending {
+        int alightPersonId{-1};
+        QString alightDir;
+        QDateTime alightTime;
+    };
+
+    PersonFolder *m_personFolder{nullptr};
+    QThread *m_folderMatchThread{nullptr};
+    FolderMatchWorker *m_folderMatchWorker{nullptr};
+    quint64 m_folderMatchJobCounter{0};
+    QVector<BoardFolderEntry> m_boardFolders;      // 上车目录登记表
+    QMap<quint64, FolderMatchPending> m_folderMatchPending;
+    QString m_sessionStatePath;                    // 会话状态持久化文件路径
+
+    // ===== Web 状态服务（手机端查看上下车状态）=====
+    StatusWebServer *m_webServer{nullptr};
+    QJsonArray m_recentMatches;                    // 最近匹配记录（board/alight/similarity）
+    void initWebServer();
+    void pushWebStatus();
+
+    void initPersonFolder();
+    /// 会话状态持久化：人员进出记录 + 上车目录登记 + 计数（重启后恢复，人工清零才归零）
+    void saveSessionState();
+    void loadSessionState();
+    /// 帧处理时：乘客出现即分配 person_N 并持续保存原始整帧（预热 + 节流）
+    void savePersonAppearanceFrames(const QVector<TrackedPerson> &persons,
+                                    const cv::Mat &rawFrame);
+    /// 后台全图比对结果结算：写 marker + 标记去重 + 落库
+    void onFolderMatchFinished(quint64 jobId, int bestPersonId, QString bestDir,
+                               float similarity, bool matched);
+
     // ===== 乘车数据存储（每站上下车人数 + 车厢内人数；SQLite 默认，可扩展 PostgreSQL）=====
     TripDataStore *m_tripStore{nullptr};
     QString m_currentTripId;          // 当前行程 ID（一次采集会话）
@@ -234,6 +305,8 @@ private:
     void initDeepReid();
     /// 当前生效的 ReID 匹配阈值（深度后端→DeepMatchThreshold，否则→MatchThreshold）
     float effectiveReidThreshold() const;
+    /// 当前生效的检测置信度阈值（head 模式用更高的 HeadConfThreshold 抑制空场景误检）
+    float effectiveDetectorConf() const;
     /// 依据 detectorModelKind 应用「尺寸/长宽比」过滤参数（person / head）
     void applyDetectorFilters(PersonDetector *det) const;
 
@@ -274,11 +347,20 @@ private:
                                      const QDateTime &time);
 
     void onCloseCamera();
+    /// 启动检测采集管线（RTSP 或视频文件通用）
+    void startDetectionPipeline();
+    /// 切换 PersonFolder 保存根目录到视频对应文件夹
+    void switchPersonFolderToVideo(const QString &videoPath);
+    /// 恢复 PersonFolder 保存根目录（视频检测结束后）
+    void restorePersonFolderFromVideo();
     void updateCameraStatus(bool connected);
     void applySettings();
     void updateDiskSpaceStatus();
     void initSaveWorker();
     void saveReidImage(const cv::Mat &frame, int trackId, const QString &type);
+
+    /// 把当前深度伪彩帧保存到 dirPath/深度图/<baseName>.jpg（与 RGB 图像对应）
+    void saveCorrespondingDepth(const QString &dirPath, const QString &baseName);
 
     /**
      * @brief 选择检测模型路径：优先轻量 ONNX 小模型（若存在），否则用配置的

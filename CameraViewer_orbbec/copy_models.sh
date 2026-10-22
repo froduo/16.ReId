@@ -6,6 +6,11 @@
 #   - 检测模型: head_yolo11n_trt10_x86.engine / head_yolo11n.onnx
 #   - 乘客检测: passenger_yolo11n_trt10_x86.engine / passenger_yolo11n.onnx
 #               （YOLO11n 单类 passenger，1x3x640x640 -> 1x5x8400）
+#   - 乘客检测: passenger_yolo26n_trt10_x86.engine / passenger_yolo26n.onnx
+#               （YOLO26n 单类 passenger，真实背景合成数据训练，
+#                 1x3x640x640 -> 1x5x8400，纯 RGB 上下车识别主模型）
+#   - 乘客检测: passenger_yolov8n_trt10_x86_20261013_180200.engine / .onnx
+#               （YOLOv8n 单类 passenger，16.reId 现场数据训练，当前上下车识别主模型）
 #   - ReID 模型: osnet_x1_0_head_finetuned.onnx / osnet_x1_0_msmt17.onnx
 #
 # 仅复制存在的文件；目标目录不存在则创建。
@@ -28,6 +33,10 @@ for m in \
     head_yolo11n.onnx \
     passenger_yolo11n_trt10_x86.engine \
     passenger_yolo11n.onnx \
+    passenger_yolo26n_trt10_x86.engine \
+    passenger_yolo26n.onnx \
+    passenger_yolov8n_trt10_x86_20261013_180200.engine \
+    passenger_yolov8n_trt10_x86_20261013_180200.onnx \
     yolo26n_trt10_x86.engine \
     yolov8n.onnx \
     osnet_x1_0_head_finetuned.onnx \

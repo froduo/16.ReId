@@ -82,7 +82,7 @@ static int g_instanceLockFd = -1;
 static bool acquireSingleInstance()
 {
     // 用可执行文件名作为锁文件名，避免不同变体互相误判为“已在运行”。
-    const char *exeName = "CameraViewer_orbbec";
+    const char *exeName = "CameraViewer";
     char exePath[4096];
     ssize_t n = ::readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
     if (n > 0) {
@@ -117,13 +117,11 @@ int main(int argc, char *argv[])
 
     QApplication a(argc, argv);
 
-    // 单实例互锁：仅拦截同一可执行文件（变体）的重复启动，
-    // 不同变体使用各自的锁文件，可同时运行。
     if (!acquireSingleInstance()) {
         QMessageBox::warning(
-            nullptr, "CameraViewer_orbbec 已在运行",
-            "检测到本程序已经在运行中。\n\n"
-            "请勿重复启动：同时运行多个同类实例会抢占同一个相机与记录文件，"
+            nullptr, "CameraViewer 已在运行",
+            "检测到程序已经在运行中。\n\n"
+            "请勿重复启动：同时运行多个实例会抢占同一个相机与记录文件，"
             "并可能导致程序崩溃。");
         return 1;
     }

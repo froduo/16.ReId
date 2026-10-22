@@ -27,8 +27,8 @@ class QTimer;
  * @brief 离线图像检测窗口
  *
  * 除检测/跟踪外，复用 ZoneMonitor 的通道状态机对**多张连续图片**做方向判定：
- *   - 人从上往下穿过检测区域：进入侧=A(顶)、离开侧=B(底) → **上车**
- *   - 人从下往上穿过检测区域：进入侧=B(底)、离开侧=A(顶) → **下车**
+ *   - 人从上往下穿过检测区域：进入侧=A(顶)、离开侧=B(底) → **下车**
+ *   - 人从下往上穿过检测区域：进入侧=B(底)、离开侧=A(顶) → **上车**
  * 连续检测时按图片顺序逐帧喂给 ZoneMonitor（tracker 状态在多次检测间保持）。
  */
 class OfflineDetectForm : public QDialog
@@ -143,7 +143,7 @@ private:
     int m_currentIndex{-1};
 
     // 方向判定结果
-    QMap<int, QString> m_trackDirection; // trackId -> "上车(从上往下)" / "下车(从下往上)"
+    QMap<int, QString> m_trackDirection; // trackId -> "上车(从下往上)" / "下车(从上往下)"
     int m_boardCount{0};
     int m_alightCount{0};
 

@@ -7,25 +7,30 @@
 
 struct AppConfig {
     // ===== 相机设置 =====
-    QString cameraIP = "192.168.99.10";
+    QString cameraIP = "192.168.200.110";
     QString cameraUser = "admin";
     QString cameraPass = "admin123";
     int cameraPort = 8554;
-    // 完整 RTSP URL（可手动覆盖）
-    QString rtspUrl = "rtsp://192.168.99.10:8554/live/camera";
-
-    // ===== 帧源选择：Orbbec Gemini 335 深度相机 =====
-    // true: Orbbec 深度相机（车门正上方俯视，输出 RGB + Depth）；false: RTSP 网络相机
-    bool  useOrbbec = true;
-    int   orbbecColorWidth = 0;    // 0 = 使用默认 profile
-    int   orbbecColorHeight = 0;
-    int   orbbecFps = 30;
-    // 深度伪彩与身高估算的有效距离范围（毫米）
-    float depthMinMM = 300.0f;
-    float depthMaxMM = 3000.0f;
+    // 完整 RTSP URL（默认由 IP/端口/用户名/密码 自动派生，见 rebuildRtspUrl）
+    // RGB 流（主路：检测、显示与图像保存）
+    QString rtspUrl = "rtsp://admin:admin123@192.168.200.110:8554/live/camera_rgb";
+    // 深度流（可选：深度伪彩显示与保存；拉流失败自动降级为仅 RGB）
+    QString depthRtspUrl = "rtsp://admin:admin123@192.168.200.110:8554/live/camera_depth";
+    // RTSP URL 是否由用户「手动指定」：
+    //   false（默认）—— URL 始终由 IP/端口/用户名/密码 派生，保证「改 IP 即生效」；
+    //   true          —— 使用上面的自定义 rtspUrl，忽略 IP 等参数（高级用法）。
+    bool cameraRtspManual = false;
 
     // 主界面标题
-    QString windowTitle = "Orbbec Gemini 335 上下车匿名重识别系统";
+    QString windowTitle = "HX-CCD23 人员检测 ReID 系统";
+
+    // ===== 下车方向持久化（下次启动默认加载上次选择）=====
+    // "TopToBottom"：从上往下 ↓（下车）；"BottomToTop"：从下往上 ↑（下车）
+    QString entryDirection = "TopToBottom";
+
+    // ===== Web 服务（手机端查看上下车状态）=====
+    bool webServerEnabled = true;
+    int  webServerPort = 8080;
 
     // ===== 图像保存参数 =====
     QString savePath = "./save_images";
@@ -34,12 +39,14 @@ struct AppConfig {
 
     // ===== 推理参数 =====
     // 模型路径（优先 TensorRT 引擎，回退到 ONNX）
-    // 默认使用 head 数据集训练的 YOLO11n 头部检测模型（俯视头肩场景）
-    QString modelPath = "./model/head_yolo11n_trt10_x86.engine";
+    QString modelPath = "./model/yolo26n_trt10_x86.engine";
     // 是否启用推理
     bool enableInference = true;
-    // 检测置信度阈值
-    float detectorConfThreshold = 0.45f;
+    // 检测置信度阈值。
+    // 【俯视场景召回】工厂 yolo26n 在本俯视场景对真实乘客的分数偏低
+    // （实测同一乘客 0.35~0.78），旧阈值 0.45 会漏检 → 下调至 0.30 提升召回；
+    // 误检由「尺寸 / 宽高比 / 静态抑制」三道过滤兜底；部署专用乘客模型后可再上调。
+    float detectorConfThreshold = 0.30f;
     // NMS 阈值
     float detectorNmsThreshold = 0.5f;
     // ===== 小目标过滤（以整幅图像尺寸为参考，默认针对 1920x1080）=====
@@ -52,10 +59,29 @@ struct AppConfig {
     // 绝对像素最小框（叠加在比例过滤之上；专治区域内小框误检）
     int   detectorMinBoxWidthPx = 30;
     int   detectorMinBoxHeightPx = 90;
-    // 宽高比(宽/高)合理区间：过细(竖条)/过扁(横条)均视为误检
-    // 俯视场景：人呈"横向/近方形"，需放宽宽高比上限（默认 1.00 会误杀横向人体框）
+    // 宽高比(宽/高)合理区间：过细(竖条)/过扁(横条)均视为误检。
+    // 【俯视场景】相机位于车门正上方，人形被压缩、检测框近方形
+    // （实测 person_43=305×307、本机 333×325，w/h≈0.99~1.03）；旧上限 1.00
+    // 会把 w/h 略大于 1 的真实乘客误杀 → 放宽为 [0.35, 3.00]（与 orbbec 工程一致）。
     float detectorMinBoxAspect = 0.35f;
     float detectorMaxBoxAspect = 3.00f;
+
+    // ===== 最大尺寸上限（比例；1.0=不限制）：抑制超大静态误检框 =====
+    // 空场景中固定物体被误检时，框通常远大于真实目标；head 头部框很小，
+    // 超过上限可直接判为非目标（比单纯抬高置信度更可靠，实测误检置信度可达 0.81）。
+    float detectorHeadMaxBoxWidthRatio  = 0.40f;   // 头框宽/图像宽 上限
+    float detectorHeadMaxBoxHeightRatio = 0.45f;   // 头框高/图像高 上限
+    float detectorHeadMaxBoxAreaRatio   = 0.12f;   // 头框面积/图像面积 上限（近景大头留足余量）
+    float detectorMaxBoxWidthRatio      = 1.00f;   // person 模式默认不限制
+    float detectorMaxBoxHeightRatio     = 1.00f;
+    float detectorMaxBoxAreaRatio       = 1.00f;
+
+    // ===== 静态误检抑制（固定摄像头：同位置、近零位移的持续检测判为背景误检）=====
+    bool  detectorStaticSuppressEnabled = true;
+    int   detectorStaticConfirmFrames   = 150;    // 连续命中多少帧后拉黑（约 3s@50fps）
+    float detectorStaticMaxMoveRatio    = 0.008f; // 中心相对起点位移上限（相对图像长边）
+    float detectorStaticIouThreshold    = 0.70f;  // 与已有静态区域的 IoU 匹配阈值
+    int   detectorStaticMissTolerance   = 30;     // 连续未命中多少帧后移除该区域
 
     // ===== 检测目标类型（适配新训练的 head 头部检测模型）=====
     // "person"：人体检测（旧 yolo26n）；"head"：头部检测（YOLO11n head，单类 1×5×8400）。
@@ -65,18 +91,21 @@ struct AppConfig {
     // TensorRT 预处理：true=letterbox（保持长宽比+灰边，旧 yolo26n 用）；
     // false=等比拉伸(squash，head 模型推荐，实测置信度 0.72 vs 0.23)。
     bool detectorLetterbox = true;
-    float detectorHeadMinHeightRatio = 0.02f;   // 头框高/图像高
-    float detectorHeadMinAreaRatio   = 0.0004f; // 头框面积/图像面积
-    int   detectorHeadMinBoxWidthPx  = 12;
-    int   detectorHeadMinBoxHeightPx = 12;
-    float detectorHeadMinBoxAspect   = 0.35f;   // 头框近似方形
-    float detectorHeadMaxBoxAspect   = 3.00f;
+    // head 模式专用置信度：比人体模式更高，用于抑制“空场景误检成乘客”。
+    float detectorHeadConfThreshold = 0.55f;
+    // head 过滤参数（较人体更严：头部框小，过松会把背景斑块当成人头）
+    float detectorHeadMinHeightRatio = 0.025f;  // 头框高/图像高（1080p ≈27px）
+    float detectorHeadMinAreaRatio   = 0.0012f; // 头框面积/图像面积
+    int   detectorHeadMinBoxWidthPx  = 22;
+    int   detectorHeadMinBoxHeightPx = 22;
+    float detectorHeadMinBoxAspect   = 0.50f;   // 头框近似方形
+    float detectorHeadMaxBoxAspect   = 2.00f;
 
     // ===== 检测模型选择（优先轻量 ONNX 小模型，提升检测帧率）=====
     // 注意：实测通用 COCO 模型(如 yolov8n)在本俯视鱼眼场景下 person 置信度极低
     //      （max≈0.02~0.06），召回远不如场景专用模型，故默认关闭；
     //      仅在用本场景数据微调过 ONNX 小模型后再开启。
-    bool detectorPreferOnnx = true;                        // 优先使用 ONNX 小模型（YOLO 官方 yolov8n）
+    bool detectorPreferOnnx = false;                       // 优先使用 ONNX 小模型（默认关闭）
     QString detectorOnnxPath = "./model/yolov8n.onnx";     // ONNX 模型路径
     bool detectorDnnUseCuda = true;                        // ONNX 推理优先 CUDA(GPU)，不可用自动回退 CPU
     int  detectorDnnInputSize = 640;                       // ONNX 输入尺寸（须与导出模型一致）
@@ -138,10 +167,17 @@ struct AppConfig {
     // 默认关闭：预训练 OSNet 在本俯视鱼眼场景下区分力尚未验证，
     // 需现场采集数据微调并标定阈值后再开启，避免误判回归。
     bool reidUseDeepReid = false;                                    // 是否启用深度 ReID
+    // 深度 ReID 推理后端：true=优先 CUDA(GPU)（把识别推理从 CPU 卸载到 GPU，
+    // 降低 CPU 占用、提升实时性；不可用时自动回退 CPU）；false=强制 CPU
+    bool reidDeepUseCuda = true;
     QString reidDeepModelPath = "./model/osnet_x1_0_msmt17.onnx";    // ONNX 模型路径
     float reidDeepMatchThreshold = 0.50f;                            // 深度特征余弦判定阈值
-    // 深度 ReID 推理是否优先使用 CUDA(GPU)；不可用/不兼容时自动回退 CPU
-    bool reidDeepUseCuda = true;
+    // ===== 上/下车文件夹全图比对（准确率优先，后台线程执行）=====
+    // 下车目录与该目录时间之前、且未标记的上车目录做全图深度 ReID 比对。
+    float reidFolderMatchThreshold = 0.60f;      // 目录级相似度判定阈值
+    int   personSaveEveryN = 3;                  // 乘客出现期间每 N 帧保存 1 张裁剪原图
+    int   personMinTrackFrames = 3;              // 新乘客建档所需的最少真实检测帧数（预热）
+    int   personFolderMaxImages = 200;           // 单目录参与比对的最大图片数
     // head 检测模型下：头框 → 人体框 的 ReID 裁剪扩展系数（1.0 表示不扩展）。
     // 深度 ReID 训练数据来自人体裁剪（visitor_V*），适度扩展可让头框裁剪更接近训练分布。
     float reidHeadBoxExpand = 1.35f;
@@ -185,12 +221,9 @@ struct AppConfig {
         s.setValue("Pass", cameraPass);
         s.setValue("Port", cameraPort);
         s.setValue("RTSP_URL", rtspUrl);
-        s.setValue("UseOrbbec", useOrbbec);
-        s.setValue("OrbbecColorWidth", orbbecColorWidth);
-        s.setValue("OrbbecColorHeight", orbbecColorHeight);
-        s.setValue("OrbbecFps", orbbecFps);
-        s.setValue("DepthMinMM", static_cast<double>(depthMinMM));
-        s.setValue("DepthMaxMM", static_cast<double>(depthMaxMM));
+        s.setValue("DepthRTSP_URL", depthRtspUrl);
+        s.setValue("RTSP_Manual", cameraRtspManual);
+        s.setValue("EntryDirection", entryDirection);
         s.endGroup();
 
         // 显示设置
@@ -208,6 +241,12 @@ struct AppConfig {
         s.setValue("JpegQuality", jpegQuality);
         s.endGroup();
 
+        // Web 服务
+        s.beginGroup("Web");
+        s.setValue("Enabled", webServerEnabled);
+        s.setValue("Port", webServerPort);
+        s.endGroup();
+
         // 推理参数
         s.beginGroup("Inference");
         s.setValue("EnableInference", enableInference);
@@ -221,8 +260,20 @@ struct AppConfig {
         s.setValue("MinBoxHeightPx", detectorMinBoxHeightPx);
         s.setValue("MinBoxAspect", static_cast<double>(detectorMinBoxAspect));
         s.setValue("MaxBoxAspect", static_cast<double>(detectorMaxBoxAspect));
+        s.setValue("HeadMaxBoxWidthRatio", static_cast<double>(detectorHeadMaxBoxWidthRatio));
+        s.setValue("HeadMaxBoxHeightRatio", static_cast<double>(detectorHeadMaxBoxHeightRatio));
+        s.setValue("HeadMaxBoxAreaRatio", static_cast<double>(detectorHeadMaxBoxAreaRatio));
+        s.setValue("MaxBoxWidthRatio", static_cast<double>(detectorMaxBoxWidthRatio));
+        s.setValue("MaxBoxHeightRatio", static_cast<double>(detectorMaxBoxHeightRatio));
+        s.setValue("MaxBoxAreaRatio", static_cast<double>(detectorMaxBoxAreaRatio));
+        s.setValue("StaticSuppressEnabled", detectorStaticSuppressEnabled);
+        s.setValue("StaticConfirmFrames", detectorStaticConfirmFrames);
+        s.setValue("StaticMaxMoveRatio", static_cast<double>(detectorStaticMaxMoveRatio));
+        s.setValue("StaticIouThreshold", static_cast<double>(detectorStaticIouThreshold));
+        s.setValue("StaticMissTolerance", detectorStaticMissTolerance);
         s.setValue("ModelKind", detectorModelKind);
         s.setValue("Letterbox", detectorLetterbox);
+        s.setValue("HeadConfThreshold", static_cast<double>(detectorHeadConfThreshold));
         s.setValue("HeadMinPersonHeightRatio", static_cast<double>(detectorHeadMinHeightRatio));
         s.setValue("HeadMinPersonAreaRatio", static_cast<double>(detectorHeadMinAreaRatio));
         s.setValue("HeadMinBoxWidthPx", detectorHeadMinBoxWidthPx);
@@ -256,9 +307,13 @@ struct AppConfig {
         s.setValue("SaveVideo", reidSaveVideo);
         s.setValue("ZoneMinDisplacement", static_cast<double>(zoneMinDisplacement));
         s.setValue("UseDeepReid", reidUseDeepReid);
+        s.setValue("DeepUseCuda", reidDeepUseCuda);
         s.setValue("DeepModelPath", reidDeepModelPath);
         s.setValue("DeepMatchThreshold", static_cast<double>(reidDeepMatchThreshold));
-        s.setValue("DeepUseCuda", reidDeepUseCuda);
+        s.setValue("FolderMatchThreshold", static_cast<double>(reidFolderMatchThreshold));
+        s.setValue("PersonSaveEveryN", personSaveEveryN);
+        s.setValue("PersonMinTrackFrames", personMinTrackFrames);
+        s.setValue("PersonFolderMaxImages", personFolderMaxImages);
         s.setValue("HeadBoxExpand", static_cast<double>(reidHeadBoxExpand));
         s.setValue("SavePath", reidSavePath);
         s.setValue("RegionSavePath", regionSavePath);
@@ -299,21 +354,29 @@ struct AppConfig {
         QSettings s(QCoreApplication::applicationDirPath() + "/config.ini", QSettings::IniFormat);
 
         // 相机设置
-        cameraIP = s.value("Camera/IP", "192.168.99.10").toString();
+        cameraIP = s.value("Camera/IP", "192.168.200.110").toString();
         cameraUser = s.value("Camera/User", "admin").toString();
         cameraPass = s.value("Camera/Pass", "admin123").toString();
         cameraPort = s.value("Camera/Port", 8554).toInt();
-        rtspUrl = s.value("Camera/RTSP_URL",
-            "rtsp://192.168.99.10:8554/live/camera").toString();
-        useOrbbec = s.value("Camera/UseOrbbec", true).toBool();
-        orbbecColorWidth = s.value("Camera/OrbbecColorWidth", 0).toInt();
-        orbbecColorHeight = s.value("Camera/OrbbecColorHeight", 0).toInt();
-        orbbecFps = s.value("Camera/OrbbecFps", 30).toInt();
-        depthMinMM = static_cast<float>(s.value("Camera/DepthMinMM", 300.0).toDouble());
-        depthMaxMM = static_cast<float>(s.value("Camera/DepthMaxMM", 3000.0).toDouble());
+        // 是否手动指定 RTSP URL（缺省 false → 以相机 IP/端口为唯一事实来源）
+        cameraRtspManual = s.value("Camera/RTSP_Manual", false).toBool();
+        rtspUrl = s.value("Camera/RTSP_URL", QString()).toString();
+        depthRtspUrl = s.value("Camera/DepthRTSP_URL", QString()).toString();
+        // 关键修复：默认始终按「相机 IP + 端口 + 用户名 + 密码」重建两路 RTSP URL，
+        // 避免历史 config.ini 中残留的旧 RTSP_URL 覆盖用户新配置的相机 IP，
+        // 导致「改了 IP 但启动相机仍连旧地址」。仅当用户显式开启手动指定时才沿用自定义 URL。
+        if (!cameraRtspManual || rtspUrl.isEmpty()) {
+            rebuildRtspUrl();
+            cameraRtspManual = false;
+        } else if (depthRtspUrl.isEmpty()) {
+            depthRtspUrl = derivedDepthRtspUrl();
+        }
+        entryDirection = s.value("Camera/EntryDirection", "TopToBottom").toString();
+        if (entryDirection != QLatin1String("BottomToTop"))
+            entryDirection = QLatin1String("TopToBottom");
 
         // 显示设置
-        windowTitle = s.value("Display/WindowTitle", "Orbbec Gemini 335 上下车匿名重识别系统").toString();
+        windowTitle = s.value("Display/WindowTitle", "HX-CCD23 人员检测 ReID 系统").toString();
         // 显示过滤：默认只绘制真实检测轨迹，消除卡尔曼外推的“幽灵框”
         displayOnlyDetectedTracks = s.value("Display/OnlyDetectedTracks", true).toBool();
         displayMinConfirmFrames = s.value("Display/MinConfirmFrames", 3).toInt();
@@ -326,8 +389,8 @@ struct AppConfig {
 
         // 推理参数
         enableInference = s.value("Inference/EnableInference", true).toBool();
-        modelPath = s.value("Inference/ModelPath", "./model/head_yolo11n_trt10_x86.engine").toString();
-        detectorConfThreshold = static_cast<float>(s.value("Inference/ConfThreshold", 0.45).toDouble());
+        modelPath = s.value("Inference/ModelPath", "./model/yolo26n_trt10_x86.engine").toString();
+        detectorConfThreshold = static_cast<float>(s.value("Inference/ConfThreshold", 0.30).toDouble());
         detectorNmsThreshold = static_cast<float>(s.value("Inference/NmsThreshold", 0.5).toDouble());
         detectorSizeFilterEnabled = s.value("Inference/SizeFilterEnabled", true).toBool();
         detectorMinPersonHeightRatio = static_cast<float>(s.value("Inference/MinPersonHeightRatio", 0.08).toDouble());
@@ -336,17 +399,30 @@ struct AppConfig {
         detectorMinBoxHeightPx = s.value("Inference/MinBoxHeightPx", 90).toInt();
         detectorMinBoxAspect = static_cast<float>(s.value("Inference/MinBoxAspect", 0.35).toDouble());
         detectorMaxBoxAspect = static_cast<float>(s.value("Inference/MaxBoxAspect", 3.00).toDouble());
+        detectorHeadMaxBoxWidthRatio = static_cast<float>(s.value("Inference/HeadMaxBoxWidthRatio", 0.40).toDouble());
+        detectorHeadMaxBoxHeightRatio = static_cast<float>(s.value("Inference/HeadMaxBoxHeightRatio", 0.45).toDouble());
+        detectorHeadMaxBoxAreaRatio = static_cast<float>(s.value("Inference/HeadMaxBoxAreaRatio", 0.12).toDouble());
+        detectorMaxBoxWidthRatio = static_cast<float>(s.value("Inference/MaxBoxWidthRatio", 1.00).toDouble());
+        detectorMaxBoxHeightRatio = static_cast<float>(s.value("Inference/MaxBoxHeightRatio", 1.00).toDouble());
+        detectorMaxBoxAreaRatio = static_cast<float>(s.value("Inference/MaxBoxAreaRatio", 1.00).toDouble());
+        detectorStaticSuppressEnabled = s.value("Inference/StaticSuppressEnabled", true).toBool();
+        detectorStaticConfirmFrames = s.value("Inference/StaticConfirmFrames", 150).toInt();
+        detectorStaticMaxMoveRatio = static_cast<float>(s.value("Inference/StaticMaxMoveRatio", 0.008).toDouble());
+        detectorStaticIouThreshold = static_cast<float>(s.value("Inference/StaticIouThreshold", 0.70).toDouble());
+        detectorStaticMissTolerance = s.value("Inference/StaticMissTolerance", 30).toInt();
         detectorModelKind = s.value("Inference/ModelKind", "person").toString();
         // 缺省随模型类型联动：head 模型默认 squash（letterbox 会使头部分数低于阈值）
         const bool lbDefault = (detectorModelKind.compare("head", Qt::CaseInsensitive) != 0);
         detectorLetterbox = s.value("Inference/Letterbox", lbDefault).toBool();
-        detectorHeadMinHeightRatio = static_cast<float>(s.value("Inference/HeadMinPersonHeightRatio", 0.02).toDouble());
-        detectorHeadMinAreaRatio = static_cast<float>(s.value("Inference/HeadMinPersonAreaRatio", 0.0004).toDouble());
-        detectorHeadMinBoxWidthPx = s.value("Inference/HeadMinBoxWidthPx", 12).toInt();
-        detectorHeadMinBoxHeightPx = s.value("Inference/HeadMinBoxHeightPx", 12).toInt();
-        detectorHeadMinBoxAspect = static_cast<float>(s.value("Inference/HeadMinBoxAspect", 0.35).toDouble());
-        detectorHeadMaxBoxAspect = static_cast<float>(s.value("Inference/HeadMaxBoxAspect", 3.00).toDouble());
-        detectorPreferOnnx = s.value("Inference/PreferOnnx", true).toBool();
+        detectorHeadConfThreshold = static_cast<float>(
+            s.value("Inference/HeadConfThreshold", 0.55).toDouble());
+        detectorHeadMinHeightRatio = static_cast<float>(s.value("Inference/HeadMinPersonHeightRatio", 0.025).toDouble());
+        detectorHeadMinAreaRatio = static_cast<float>(s.value("Inference/HeadMinPersonAreaRatio", 0.0012).toDouble());
+        detectorHeadMinBoxWidthPx = s.value("Inference/HeadMinBoxWidthPx", 22).toInt();
+        detectorHeadMinBoxHeightPx = s.value("Inference/HeadMinBoxHeightPx", 22).toInt();
+        detectorHeadMinBoxAspect = static_cast<float>(s.value("Inference/HeadMinBoxAspect", 0.50).toDouble());
+        detectorHeadMaxBoxAspect = static_cast<float>(s.value("Inference/HeadMaxBoxAspect", 2.00).toDouble());
+        detectorPreferOnnx = s.value("Inference/PreferOnnx", false).toBool();
         detectorOnnxPath = s.value("Inference/OnnxPath", "./model/yolov8n.onnx").toString();
         detectorDnnUseCuda = s.value("Inference/DnnUseCuda", true).toBool();
         detectorDnnInputSize = s.value("Inference/DnnInputSize", 640).toInt();
@@ -368,10 +444,14 @@ struct AppConfig {
         reidUseBackground = s.value("ReID/UseBackground", true).toBool();
         reidSaveVideo = s.value("ReID/SaveVideo", true).toBool();
         zoneMinDisplacement = static_cast<float>(s.value("ReID/ZoneMinDisplacement", 0.04).toDouble());
-        reidUseDeepReid = s.value("ReID/UseDeepReid", true).toBool();
-        reidDeepModelPath = s.value("ReID/DeepModelPath", "./model/osnet_x1_0_head_finetuned.onnx").toString();
-        reidDeepMatchThreshold = static_cast<float>(s.value("ReID/DeepMatchThreshold", 0.60).toDouble());
+        reidUseDeepReid = s.value("ReID/UseDeepReid", false).toBool();
         reidDeepUseCuda = s.value("ReID/DeepUseCuda", true).toBool();
+        reidDeepModelPath = s.value("ReID/DeepModelPath", "./model/osnet_x1_0_msmt17.onnx").toString();
+        reidDeepMatchThreshold = static_cast<float>(s.value("ReID/DeepMatchThreshold", 0.50).toDouble());
+        reidFolderMatchThreshold = static_cast<float>(s.value("ReID/FolderMatchThreshold", 0.60).toDouble());
+        personSaveEveryN = s.value("ReID/PersonSaveEveryN", 3).toInt();
+        personMinTrackFrames = s.value("ReID/PersonMinTrackFrames", 3).toInt();
+        personFolderMaxImages = s.value("ReID/PersonFolderMaxImages", 200).toInt();
         reidHeadBoxExpand = static_cast<float>(s.value("ReID/HeadBoxExpand", 1.35).toDouble());
         reidSavePath = s.value("ReID/SavePath", "./save_images/reid").toString();
         regionSavePath = s.value("ReID/RegionSavePath", "./regions.json").toString();
@@ -395,14 +475,30 @@ struct AppConfig {
         currentStationId = s.value("TripDb/StationId", "STATION-01").toString();
         currentStationName = s.value("TripDb/StationName", "1号站").toString();
 
+        // Web 服务
+        webServerEnabled = s.value("Web/Enabled", true).toBool();
+        webServerPort = s.value("Web/Port", 8080).toInt();
+
         // 更新参数
         updateUrl = s.value("Update/UpdateUrl").toString();
     }
 
-    /// 根据 IP/User/Pass/Port 重建 RTSP URL
-    void rebuildRtspUrl() {
-        rtspUrl = QString("rtsp://%1:%2@%3:%4/live/camera")
+    /// 根据 IP/User/Pass/Port 生成 RGB 流 RTSP URL（不修改成员变量）
+    QString derivedRtspUrl() const {
+        return QString("rtsp://%1:%2@%3:%4/live/camera_rgb")
             .arg(cameraUser, cameraPass, cameraIP).arg(cameraPort);
+    }
+
+    /// 根据 IP/User/Pass/Port 生成深度流 RTSP URL（不修改成员变量）
+    QString derivedDepthRtspUrl() const {
+        return QString("rtsp://%1:%2@%3:%4/live/camera_depth")
+            .arg(cameraUser, cameraPass, cameraIP).arg(cameraPort);
+    }
+
+    /// 根据 IP/User/Pass/Port 重建 RGB + 深度两路 RTSP URL
+    void rebuildRtspUrl() {
+        rtspUrl = derivedRtspUrl();
+        depthRtspUrl = derivedDepthRtspUrl();
     }
 };
 

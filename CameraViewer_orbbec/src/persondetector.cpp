@@ -1,10 +1,10 @@
 #include "persondetector.h"
 #include "trt_yolo.h"
 #include "logger.h"
-#include <fstream>
-#include <QElapsedTimer>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <algorithm>
+#include <cmath>
 
 PersonDetector::PersonDetector()
     : m_confThreshold(0.45f)
@@ -47,6 +47,36 @@ void PersonDetector::setBoxAspectRange(float minAspect, float maxAspect)
                  .arg(m_minAspect, 0, 'f', 3).arg(m_maxAspect, 0, 'f', 3));
 }
 
+void PersonDetector::setMaxSizeFilter(float maxWidthRatio, float maxHeightRatio, float maxAreaRatio)
+{
+    // <=0 或 >=1 视为不限制
+    m_maxWidthRatio  = (maxWidthRatio  > 0.0f && maxWidthRatio  < 1.0f) ? maxWidthRatio  : 1.0f;
+    m_maxHeightRatio = (maxHeightRatio > 0.0f && maxHeightRatio < 1.0f) ? maxHeightRatio : 1.0f;
+    m_maxAreaRatio   = (maxAreaRatio   > 0.0f && maxAreaRatio   < 1.0f) ? maxAreaRatio   : 1.0f;
+    LOG_INFO(QString("[PersonDetector] Max-size filter set: widthRatio<=%1, heightRatio<=%2, "
+                     "areaRatio<=%3 (1.0=不限)")
+                 .arg(m_maxWidthRatio, 0, 'f', 3)
+                 .arg(m_maxHeightRatio, 0, 'f', 3)
+                 .arg(m_maxAreaRatio, 0, 'f', 3));
+}
+
+void PersonDetector::setStaticSuppression(bool enabled, int confirmFrames,
+                                          float maxMoveRatio, float iouThreshold, int missTolerance)
+{
+    m_staticEnabled       = enabled;
+    m_staticConfirmFrames = qMax(1, confirmFrames);
+    m_staticMaxMoveRatio  = qBound(0.0005f, maxMoveRatio, 0.20f);
+    m_staticIouThresh     = qBound(0.10f, iouThreshold, 0.99f);
+    m_staticMissTolerance = qMax(1, missTolerance);
+    LOG_INFO(QString("[PersonDetector] Static suppression set: enabled=%1, confirmFrames=%2, "
+                     "maxMoveRatio=%3, iou>%4, missTolerance=%5")
+                 .arg(m_staticEnabled ? "true" : "false")
+                 .arg(m_staticConfirmFrames)
+                 .arg(m_staticMaxMoveRatio, 0, 'f', 4)
+                 .arg(m_staticIouThresh, 0, 'f', 2)
+                 .arg(m_staticMissTolerance));
+}
+
 bool PersonDetector::passSizeFilter(const cv::Rect &box, int imgW, int imgH) const
 {
     if (!m_sizeFilterEnabled) return true;
@@ -68,6 +98,16 @@ bool PersonDetector::passSizeFilter(const cv::Rect &box, int imgW, int imgH) con
     const float areaRatio = static_cast<float>(box.width) * static_cast<float>(box.height)
                             / (static_cast<float>(imgW) * static_cast<float>(imgH));
     if (areaRatio < m_minAreaRatio) return false;
+
+    // ===== 最大尺寸上限：抑制超大静态误检（空场景固定物体被误判）=====
+    if (m_maxWidthRatio < 0.999f || m_maxHeightRatio < 0.999f) {
+        const float wRatio = static_cast<float>(box.width) / static_cast<float>(imgW);
+        const float hRatio = static_cast<float>(box.height) / static_cast<float>(imgH);
+        if (wRatio > m_maxWidthRatio || hRatio > m_maxHeightRatio) return false;
+    }
+    if (m_maxAreaRatio > 0.0f && m_maxAreaRatio < 0.999f && areaRatio > m_maxAreaRatio) {
+        return false;
+    }
 
     return true;
 }
@@ -102,14 +142,42 @@ bool PersonDetector::loadModel(const QString &modelPath, float confThreshold, fl
             m_useTrt = false;
             m_dnnCudaActive = false;
 
-            // ===== 后端选择：强制 CPU =====
-            // 重要：OpenCV 的 CUDA 后端(DNN_BACKEND_CUDA) 对该 YOLOv8 ONNX 模型会输出
-            // 错误张量（框坐标恒为 0、person 类分数虚高），导致“未识别人/误检”。
-            // 已通过与 onnxruntime 及 cv2.dnn(CPU) 逐元素比对确认：CPU 后端结果正确。
-            // CPU 后端单帧约 10ms，满足实时性，故此处强制使用 CPU。
-            m_net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
-            m_net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-            m_dnnCudaActive = false;
+            // ===== 后端选择：优先 CUDA（GPU），不可用自动回退 CPU =====
+            if (m_dnnUseCuda) {
+                try {
+                    m_net.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+                    m_net.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+                    m_dnnCudaActive = true;
+                } catch (const cv::Exception &e) {
+                    m_dnnCudaActive = false;
+                    LOG_WARN(QString("[PersonDetector] DNN CUDA 后端不可用: %1")
+                                 .arg(QString::fromStdString(e.what())));
+                }
+            }
+
+            // 自检：用一次前向验证后端真正可用（部分环境设置后端不报错，
+            // 直到 forward 才抛异常）；失败则回退 CPU 并重试。
+            if (m_dnnCudaActive) {
+                try {
+                    cv::Mat dummy(m_dnnInputSize, m_dnnInputSize, CV_8UC3, cv::Scalar(0, 0, 0));
+                    cv::Mat blob = cv::dnn::blobFromImage(
+                        dummy, 1.0 / 255.0, cv::Size(m_dnnInputSize, m_dnnInputSize),
+                        cv::Scalar(0, 0, 0), true, false);
+                    m_net.setInput(blob);
+                    m_net.forward();
+                } catch (const cv::Exception &e) {
+                    LOG_WARN(QString("[PersonDetector] DNN CUDA 前向自检失败，回退 CPU: %1")
+                                 .arg(QString::fromStdString(e.what())));
+                    m_net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+                    m_net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+                    m_dnnCudaActive = false;
+                }
+            }
+
+            if (!m_dnnCudaActive) {
+                m_net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+                m_net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+            }
 
             m_loaded = true;
             LOG_INFO(QString("[PersonDetector] OpenCV DNN(ONNX) loaded: %1 | backend=%2 | input=%3x%3")
@@ -147,6 +215,12 @@ QVector<cv::Rect> PersonDetector::detect(const cv::Mat &frame)
         const bool diagLog = (s_diagTimer.elapsed() >= 1000);
         if (diagLog) s_diagTimer.restart();
 
+        // 「无人检测」日志单独降频（10 秒 1 条），空场景下不刷屏
+        static QElapsedTimer s_noDetTimer;
+        if (!s_noDetTimer.isValid()) s_noDetTimer.start();
+        const bool noDetLog = (s_noDetTimer.elapsed() >= 10000);
+        if (noDetLog) s_noDetTimer.restart();
+
         if (!detections.empty()) {
             if (diagLog) {
                 LOG_INFO(QString("[PersonDetector] TensorRT total detections: %1 (confThreshold=%2)")
@@ -158,7 +232,7 @@ QVector<cv::Rect> PersonDetector::detect(const cv::Mat &frame)
                                  .arg(d.x).arg(d.y).arg(d.w).arg(d.h));
                 }
             }
-        } else if (diagLog) {
+        } else if (noDetLog) {
             LOG_WARN(QString("[PersonDetector] TensorRT: NO detections at all (confThreshold=%1, image=%2x%3)")
                          .arg(m_confThreshold, 0, 'f', 2).arg(frame.cols).arg(frame.rows));
         }
@@ -188,6 +262,9 @@ QVector<cv::Rect> PersonDetector::detect(const cv::Mat &frame)
                          .arg(frame.cols).arg(frame.rows));
         }
 
+        // 静态误检抑制：同位置、近零位移的持续检测判为背景误检并忽略
+        results = applyStaticSuppression(results, frame.cols, frame.rows);
+
         return results;
     }
 
@@ -196,26 +273,14 @@ QVector<cv::Rect> PersonDetector::detect(const cv::Mat &frame)
     int imgW = frame.cols;
     int imgH = frame.rows;
 
-    // ===== letterbox 预处理（保持长宽比 + 114 灰边），与下方坐标映射一致 =====
-    // 旧实现用 blobFromImage 直接拉伸（等价 squash）却按 letterbox 映射坐标，
-    // 会使框位置/尺寸错乱进而被尺寸过滤误杀；这里修正为真正的 letterbox。
-    const float scale = std::min(static_cast<float>(inputSize) / imgW,
-                                 static_cast<float>(inputSize) / imgH);
-    const int newW = static_cast<int>(std::round(imgW * scale));
-    const int newH = static_cast<int>(std::round(imgH * scale));
-    const int dw = (inputSize - newW) / 2;
-    const int dh = (inputSize - newH) / 2;
+    float scale = std::min(static_cast<float>(inputSize) / imgW,
+                           static_cast<float>(inputSize) / imgH);
+    int padW = static_cast<int>(imgW * scale);
+    int padH = static_cast<int>(imgH * scale);
+    int dw = (inputSize - padW) / 2;
+    int dh = (inputSize - padH) / 2;
 
-    cv::Mat canvas(inputSize, inputSize, CV_8UC3, cv::Scalar(114, 114, 114));
-    cv::Mat resized;
-    cv::resize(frame, resized, cv::Size(newW, newH));
-    resized.copyTo(canvas(cv::Rect(dw, dh, newW, newH)));
-
-    // 【一次性】把 letterbox 后的 640×640 输入存盘，便于用 Python 复算对比张量读取是否正确
-    static bool s_canvasDumped = false;
-    if (!s_canvasDumped) { s_canvasDumped = true; cv::imwrite("/tmp/orbbec_canvas.png", canvas); }
-
-    cv::Mat blob = cv::dnn::blobFromImage(canvas, 1.0 / 255.0,
+    cv::Mat blob = cv::dnn::blobFromImage(frame, 1.0 / 255.0,
                                           cv::Size(inputSize, inputSize),
                                           cv::Scalar(0, 0, 0), true, false);
 
@@ -228,90 +293,41 @@ QVector<cv::Rect> PersonDetector::detect(const cv::Mat &frame)
         return results;
 
     cv::Mat output = outputs[0];
-    const float *data = output.ptr<float>();
-    // 解析张量几何：YOLOv8 官方导出为 1 x attrs(4+nc) x anchors（如 1x84x8400）。
-    // attrs(≈84) 远小于 anchors(8400)，据此判定“属性在前(通道主序)”还是“锚点在前”。
-    int attrs = 0, anchors = 0;
-    bool channelMajor = true;   // true: data[c*anchors + a]（属性 c、锚点 a）
-    if (output.dims >= 3 && output.size[1] > 0 && output.size[2] > 0) {
-        const int d1 = output.size[1], d2 = output.size[2];
-        attrs   = std::min(d1, d2);
-        anchors = std::max(d1, d2);
-        channelMajor = (d1 == attrs);
-    } else if (output.dims == 2) {
-        const int r = output.rows, c = output.cols;
-        attrs   = std::min(r, c);
-        anchors = std::max(r, c);
-        channelMajor = (r == attrs);
+    cv::Mat detectionMat;
+    if (output.dims == 3) {
+        cv::Mat reshaped(output.size[1], output.size[2], CV_32F, output.ptr<float>());
+        reshaped = reshaped.t();
+        detectionMat = reshaped;
     } else {
-        anchors = output.rows; attrs = output.cols; channelMajor = false;
+        detectionMat = output;
     }
 
-    // 直接按原始缓冲索引读取，避免 Mat 视图/转置与 numpy 语义不一致导致的错位。
-    auto at = [&](int a, int c) -> float {
-        return channelMajor ? data[static_cast<size_t>(c) * anchors + a]
-                            : data[static_cast<size_t>(a) * attrs + c];
-    };
-
-    const int numClasses = std::max(0, attrs - 4);
-
-    // 【一次性】把 C++ 侧输出张量原始缓冲导出，供 Python 与 onnxruntime 逐元素对比
-    static bool s_tensorDumped = false;
-    if (!s_tensorDumped) {
-        s_tensorDumped = true;
-        std::ofstream ofs("/tmp/orbbec_out.f32", std::ios::binary);
-        ofs.write(reinterpret_cast<const char *>(data),
-                  static_cast<std::streamsize>(sizeof(float) * attrs * anchors));
-    }
-
-    // 一次性布局诊断（确认维度与主轴方向）
-    static bool s_layoutLogged = false;
-    if (!s_layoutLogged) {
-        s_layoutLogged = true;
-        LOG_INFO(QString("[PersonDetector][ONNX] layout: dims=%1 size=(%2,%3,%4) attrs=%5 anchors=%6 channelMajor=%7")
-                     .arg(output.dims)
-                     .arg(output.dims > 0 ? output.size[0] : 0)
-                     .arg(output.dims > 1 ? output.size[1] : 0)
-                     .arg(output.dims > 2 ? output.size[2] : 0)
-                     .arg(attrs).arg(anchors).arg(channelMajor ? 1 : 0));
-    }
+    int numClasses = detectionMat.cols - 4;
 
     std::vector<float> confidences;
     std::vector<cv::Rect> boxes;
-    float bestPersonConf = 0.0f;   // 诊断：person 类最高分（含低于阈值者）
-    int   scorePass = 0;           // 诊断：person 类过阈值(但未必通过几何)的锚点数
-    int   bestRow = -1;            // 诊断：最高分 person 所在锚点
-    float bestRaw[8] = {0,0,0,0,0,0,0,0};  // 诊断：该锚点前 8 个原始值
 
-    for (int a = 0; a < anchors; ++a) {
-        int   clsMax = -1;
-        float scMax = -1.0f;
-        for (int c = 0; c < numClasses; ++c) {
-            const float s = at(a, 4 + c);
-            if (s > scMax) { scMax = s; clsMax = c; }
-        }
+    for (int i = 0; i < detectionMat.rows; i++) {
+        float *row = detectionMat.ptr<float>(i);
+        cv::Mat scores(1, numClasses, CV_32F, row + 4);
+        cv::Point classIdPoint;
+        double maxConf;
+        cv::minMaxLoc(scores, nullptr, &maxConf, nullptr, &classIdPoint);
 
-        if (clsMax == 0 && scMax > bestPersonConf) {
-            bestPersonConf = scMax;
-            bestRow = a;
-            for (int k = 0; k < 8 && k < attrs; ++k) bestRaw[k] = at(a, k);
-        }
-
-        if (clsMax == 0 && scMax >= m_confThreshold) {
-            scorePass++;
-            const float cx = (at(a,0) - dw) / scale;
-            const float cy = (at(a,1) - dh) / scale;
-            const float w  = at(a,2) / scale;
-            const float h  = at(a,3) / scale;
+        if (classIdPoint.x == 0 && maxConf >= m_confThreshold) {
+            float cx = (row[0] - dw) / scale;
+            float cy = (row[1] - dh) / scale;
+            float w = row[2] / scale;
+            float h = row[3] / scale;
 
             int left = std::max(0, static_cast<int>(cx - w / 2));
-            int top  = std::max(0, static_cast<int>(cy - h / 2));
-            int width  = std::min(static_cast<int>(w), imgW - left);
+            int top = std::max(0, static_cast<int>(cy - h / 2));
+            int width = std::min(static_cast<int>(w), imgW - left);
             int height = std::min(static_cast<int>(h), imgH - top);
 
             if (width > 0 && height > 0) {
                 boxes.push_back(cv::Rect(left, top, width, height));
-                confidences.push_back(scMax);
+                confidences.push_back(static_cast<float>(maxConf));
             }
         }
     }
@@ -333,24 +349,8 @@ QVector<cv::Rect> PersonDetector::detect(const cv::Mat &frame)
                      .arg(m_minHeightRatio, 0, 'f', 3).arg(m_minAreaRatio, 0, 'f', 4));
     }
 
-    // 诊断日志（限频 1s）：确认 ONNX(YOLO) 路径是否正常出分
-    static QElapsedTimer s_dnnDiagTimer;
-    if (!s_dnnDiagTimer.isValid()) s_dnnDiagTimer.start();
-    if (s_dnnDiagTimer.elapsed() >= 1000) {
-        s_dnnDiagTimer.restart();
-        LOG_INFO(QString("[PersonDetector][ONNX] image=%1x%2 候选=%3 通过过滤=%4 阈值=%5 "
-                         "person最高分=%6 scorePass=%7 bestRow=%8 raw8=[%9,%10,%11,%12,%13,%14,%15,%16]")
-                     .arg(imgW).arg(imgH)
-                     .arg(static_cast<int>(boxes.size()))
-                     .arg(results.size())
-                     .arg(m_confThreshold, 0, 'f', 2)
-                     .arg(bestPersonConf, 0, 'f', 3)
-                     .arg(scorePass).arg(bestRow)
-                     .arg(bestRaw[0], 0, 'f', 1).arg(bestRaw[1], 0, 'f', 1)
-                     .arg(bestRaw[2], 0, 'f', 1).arg(bestRaw[3], 0, 'f', 1)
-                     .arg(bestRaw[4], 0, 'f', 3).arg(bestRaw[5], 0, 'f', 3)
-                     .arg(bestRaw[6], 0, 'f', 3).arg(bestRaw[7], 0, 'f', 3));
-    }
+    // 静态误检抑制：同位置、近零位移的持续检测判为背景误检并忽略
+    results = applyStaticSuppression(results, imgW, imgH);
 
     return results;
 }
@@ -436,4 +436,98 @@ QVector<Detection> PersonDetector::detectAll(const cv::Mat &frame)
     }
 
     return results;
+}
+
+// ===== 静态误检抑制实现 =====
+namespace {
+inline float rectIoU(const cv::Rect &a, const cv::Rect &b)
+{
+    const int x1 = std::max(a.x, b.x);
+    const int y1 = std::max(a.y, b.y);
+    const int x2 = std::min(a.x + a.width,  b.x + b.width);
+    const int y2 = std::min(a.y + a.height, b.y + b.height);
+    const int iw = x2 - x1;
+    const int ih = y2 - y1;
+    if (iw <= 0 || ih <= 0) return 0.0f;
+    const float inter = static_cast<float>(iw) * static_cast<float>(ih);
+    const float uni = static_cast<float>(a.area()) + static_cast<float>(b.area()) - inter;
+    return uni > 0.0f ? inter / uni : 0.0f;
+}
+} // namespace
+
+QVector<cv::Rect> PersonDetector::applyStaticSuppression(const QVector<cv::Rect> &boxes,
+                                                         int imgW, int imgH)
+{
+    if (!m_staticEnabled || imgW <= 0 || imgH <= 0)
+        return boxes;
+
+    const float maxMove = m_staticMaxMoveRatio * static_cast<float>(std::max(imgW, imgH));
+
+    // 1) 已有区域先记为「本帧未命中」
+    for (auto &r : m_staticRegions) r.miss++;
+
+    std::vector<bool> matched(m_staticRegions.size(), false);
+    QVector<cv::Rect> kept;
+    kept.reserve(boxes.size());
+
+    for (const cv::Rect &box : boxes) {
+        const float cx = box.x + box.width * 0.5f;
+        const float cy = box.y + box.height * 0.5f;
+
+        // 2) 找与已有区域匹配（IoU 足够且相对起点位移极小）
+        int best = -1;
+        float bestDist = 1e9f;
+        for (size_t k = 0; k < m_staticRegions.size(); ++k) {
+            if (matched[k]) continue;
+            if (rectIoU(box, m_staticRegions[k].box) < m_staticIouThresh) continue;
+            const float d = std::hypot(cx - m_staticRegions[k].refCenter.x,
+                                       cy - m_staticRegions[k].refCenter.y);
+            if (d > maxMove) continue;   // 相对起点移动过大 → 不是同一静止目标
+            if (d < bestDist) { bestDist = d; best = static_cast<int>(k); }
+        }
+
+        if (best >= 0) {
+            StaticRegion &r = m_staticRegions[best];
+            matched[best] = true;
+            r.box = box;
+            r.miss = 0;
+            // 仅「连续出现」才累计；明显中断后重新计数，避免间断命中被误判为静止
+            if (r.hits > 0 && r.miss > 3) r.hits = 0;
+            r.hits++;
+
+            if (!r.suppressed && r.hits >= m_staticConfirmFrames) {
+                r.suppressed = true;
+                LOG_WARN(QString("[PersonDetector] 静态误检抑制：框(%1,%2,%3x%4) 连续 %5 帧位置基本不变，"
+                                 "判定为静态背景误检，已忽略")
+                             .arg(box.x).arg(box.y).arg(box.width).arg(box.height).arg(r.hits));
+            }
+            if (r.suppressed) continue;   // 命中已确认的静态误检 → 丢弃
+        } else {
+            // 新建区域（限制总数，避免无界增长）
+            if (m_staticRegions.size() < 128) {
+                StaticRegion nr;
+                nr.box = box;
+                nr.refCenter = cv::Point2f(cx, cy);
+                nr.hits = 1;
+                nr.miss = 0;
+                m_staticRegions.push_back(nr);
+                matched.push_back(true);
+            }
+        }
+
+        kept.push_back(box);
+    }
+
+    // 3) 长时间未出现的区域移除（目标离开后自动「解封」）
+    for (int k = static_cast<int>(m_staticRegions.size()) - 1; k >= 0; --k) {
+        if (!matched[k] && m_staticRegions[k].miss > m_staticMissTolerance) {
+            if (m_staticRegions[k].suppressed) {
+                LOG_INFO(QString("[PersonDetector] 静态误检区域解封（连续 %1 帧未出现）")
+                             .arg(m_staticRegions[k].miss));
+            }
+            m_staticRegions.erase(m_staticRegions.begin() + k);
+        }
+    }
+
+    return kept;
 }

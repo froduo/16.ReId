@@ -5,10 +5,9 @@
 #include <QScrollBar>
 #include <QWheelEvent>
 #include <QPainter>
-#include <QToolTip>
+#include <QtMath>
 
 #include <cmath>
-#include <cstring>
 
 ImageView::ImageView(QWidget* parent)
     : QGraphicsView(parent)
@@ -27,21 +26,6 @@ ImageView::ImageView(QWidget* parent)
     setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     setCursor(Qt::ArrowCursor);
-    setMouseTracking(true);   // 深度视图需要无按键即时显示悬停信息
-}
-
-void ImageView::setDepthData(int width, int height, const quint16 *dataMM)
-{
-    if (width <= 0 || height <= 0 || !dataMM) {
-        m_depthEnabled = false;
-        return;
-    }
-    const size_t n = static_cast<size_t>(width) * static_cast<size_t>(height);
-    m_depthMM.resize(static_cast<int>(n));
-    std::memcpy(m_depthMM.data(), dataMM, n * sizeof(quint16));
-    m_depthW = width;
-    m_depthH = height;
-    m_depthEnabled = true;
 }
 
 void ImageView::setImage(const QImage& image)
@@ -324,21 +308,6 @@ void ImageView::mousePressEvent(QMouseEvent* event)
 
 void ImageView::mouseMoveEvent(QMouseEvent* event)
 {
-    // 深度视图（只读）：鼠标悬停显示 像素坐标 + 距离/高度(m)
-    if (m_depthEnabled && m_drawMode == DrawMode::View && m_hasImage) {
-        const QPointF imgPt = mapToImage(event->pos());
-        const int ix = qRound(imgPt.x());
-        const int iy = qRound(imgPt.y());
-        if (ix >= 0 && ix < m_depthW && iy >= 0 && iy < m_depthH) {
-            const quint16 d = m_depthMM[iy * m_depthW + ix];
-            const QString txt = (d == 0)
-                ? QString("像素坐标 (%1, %2)   深度: 无有效值(0)").arg(ix).arg(iy)
-                : QString("像素坐标 (%1, %2)   距离/高度: %3 m")
-                      .arg(ix).arg(iy).arg(d / 1000.0, 0, 'f', 3);
-            QToolTip::showText(event->globalPos(), txt, this);
-        }
-    }
-
     // EditRegion 模式：拖拽角点
     if (m_drawMode == DrawMode::EditRegion) {
         if (m_draggingHandle && m_dragPolygonIndex >= 0 && m_dragVertexIndex >= 0) {

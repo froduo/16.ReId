@@ -3,17 +3,13 @@
 
 #include <QObject>
 #include <QString>
-#include <memory>
 #include <opencv2/opencv.hpp>
 
-class OrbbecSource;
-
 /**
- * @brief 相机控制器：支持两种帧源
- *  1) RTSP 网络相机（OpenCV VideoCapture）—— 原 HX-CCD23 方案
- *  2) Orbbec Gemini 335 深度相机（OrbbecSDK v2）—— 车门正上方俯视，输出 RGB + Depth
+ * @brief 相机控制器：RGB 主路（RTSP 或本地视频文件）+ 可选深度流
  *
- * 统一对外提供 getFrame()/grabFrames()，GrabThread 无需区分来源。
+ *  - openCamera(rgbUrl, depthUrl)：拉取两路 RTSP（深度流可选，失败自动降级为仅 RGB）
+ *  - openVideoFile(path)：本地视频文件检测（无深度）
  */
 class CameraController : public QObject
 {
@@ -22,30 +18,21 @@ public:
     explicit CameraController(QObject *parent = nullptr);
     ~CameraController();
 
-    /** 打开 RTSP 流 */
-    bool openCamera(const QString &rtspUrl);
+    bool openCamera(const QString &rtspUrl, const QString &depthRtspUrl = QString());
+    bool openVideoFile(const QString &path);
+    bool isVideoFile() const { return m_isVideoFile; }
 
-    /**
-     * @brief 打开 Orbbec 深度相机
-     * @param colorWidth/colorHeight/fps 0 表示默认 profile
-     */
-    bool openOrbbec(int colorWidth = 0, int colorHeight = 0, int fps = 0);
-
-    /** 获取一帧彩色图像（BGR） */
     bool getFrame(cv::Mat &frame);
-
-    /** 统一取帧：彩色(BGR, CV_8UC3) + 深度(CV_16U, 毫米；非 Orbbec 时为空) */
-    bool grabFrames(cv::Mat &colorBGR, cv::Mat &depthMM);
+    bool getDepthFrame(cv::Mat &frame);
+    /// 统一取帧：RGB 主路 + 深度（深度失败不影响 RGB 主路）
+    bool grabFrames(cv::Mat &colorBGR, cv::Mat &depth);
 
     void closeCamera();
     bool isOpen() const;
 
-    bool isOrbbec() const { return m_isOrbbec; }
     bool hasDepth() const { return m_hasDepth; }
-
     QString rtspUrl() const { return m_rtspUrl; }
-    QString deviceName() const { return m_devName; }
-    QString lastError() const { return m_lastError; }
+    QString depthRtspUrl() const { return m_depthRtspUrl; }
 
     int frameWidth() const { return m_frameWidth; }
     int frameHeight() const { return m_frameHeight; }
@@ -55,19 +42,15 @@ signals:
     void deviceDisconnected();
 
 private:
-    // RTSP
-    cv::VideoCapture m_cap;
+    cv::VideoCapture m_cap;       // RGB 主路
+    cv::VideoCapture m_depthCap;  // 深度流（可选）
     QString m_rtspUrl;
+    QString m_depthRtspUrl;
+    bool m_isVideoFile{false};
+    bool m_hasDepth{false};
     int m_frameWidth = 0;
     int m_frameHeight = 0;
     double m_fps = 0.0;
-
-    // Orbbec
-    std::shared_ptr<OrbbecSource> m_orbbec;
-    bool m_isOrbbec = false;
-    bool m_hasDepth = false;
-    QString m_devName;
-    QString m_lastError;
 };
 
 #endif // CAMERACONTROLLER_H

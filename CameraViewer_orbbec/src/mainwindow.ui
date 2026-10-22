@@ -89,6 +89,20 @@
          </property>
         </widget>
        </item>
+       <!-- 选择视频按钮 -->
+       <item>
+        <widget class="QPushButton" name="btnSelectVideo">
+         <property name="minimumSize">
+          <size>
+           <width>120</width>
+           <height>32</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>选择视频</string>
+         </property>
+        </widget>
+       </item>
        <!-- 自动保存开关 -->
        <item>
         <widget class="QCheckBox" name="chkAutoSave">
@@ -102,7 +116,7 @@
         <widget class="QPushButton" name="btnDrawRegion">
          <property name="minimumSize">
           <size>
-           <width>120</width>
+           <width>140</width>
            <height>32</height>
           </size>
          </property>
@@ -121,7 +135,7 @@
           </size>
          </property>
          <property name="text">
-          <string>清除区域</string>
+          <string>清除计数</string>
          </property>
         </widget>
        </item>
@@ -129,7 +143,7 @@
        <item>
         <widget class="QLabel" name="label_entryDir">
          <property name="text">
-          <string>进入方向:</string>
+          <string>下车方向:</string>
          </property>
          <property name="styleSheet">
           <string notr="true">color: #78ceff; font-family: 'Consolas'; font-size: 12px; font-weight: bold;</string>
@@ -150,7 +164,7 @@
          </property>
          <item>
           <property name="text">
-           <string>从上往下 ↓（上车）</string>
+           <string>从上往下 ↓（下车）</string>
           </property>
          </item>
          <item>
@@ -241,12 +255,42 @@
             </widget>
            </item>
           <item>
+           <widget class="QLabel" name="label_depthFps">
+             <property name="styleSheet">
+              <string notr="true">color: #ffb74d; font-family: 'Consolas'; font-size: 12px; font-weight: bold;</string>
+             </property>
+             <property name="text">
+              <string>深度FPS: --</string>
+             </property>
+            </widget>
+           </item>
+          <item>
            <widget class="QLabel" name="label_personCount">
              <property name="styleSheet">
               <string notr="true">color: #ffab40; font-family: 'Consolas'; font-size: 12px; font-weight: bold;</string>
              </property>
              <property name="text">
               <string>区域人数: 0</string>
+             </property>
+            </widget>
+           </item>
+          <item>
+           <widget class="QLabel" name="label_boardCount">
+             <property name="styleSheet">
+              <string notr="true">color: #69f0ae; font-family: 'Consolas'; font-size: 12px; font-weight: bold;</string>
+             </property>
+             <property name="text">
+              <string>上车: 0</string>
+             </property>
+            </widget>
+           </item>
+          <item>
+           <widget class="QLabel" name="label_alightCount">
+             <property name="styleSheet">
+              <string notr="true">color: #ff8a80; font-family: 'Consolas'; font-size: 12px; font-weight: bold;</string>
+             </property>
+             <property name="text">
+              <string>下车: 0</string>
              </property>
             </widget>
            </item>

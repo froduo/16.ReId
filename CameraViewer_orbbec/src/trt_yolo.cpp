@@ -3,6 +3,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <opencv2/dnn.hpp>
 
 using namespace nvinfer1;
@@ -153,21 +154,16 @@ void TrtYolo::preprocess(const cv::Mat& img)
     }
     scale = scaleX;
 
-    cv::Mat rgb;
-    cv::cvtColor(padded, rgb, cv::COLOR_BGR2RGB);
-
-    cv::Mat floatImg;
-    rgb.convertTo(floatImg, CV_32FC3, 1.0 / 255.0);
-
-    // HWC -> CHW
-    const int planeSize = inputH * inputW;
-    const float* src = reinterpret_cast<const float*>(floatImg.data);
-    for (int i = 0; i < planeSize; ++i) {
-        const int base = i * 3;
-        hostInput[i] = src[base + 0];
-        hostInput[planeSize + i] = src[base + 1];
-        hostInput[2 * planeSize + i] = src[base + 2];
-    }
+    // 预处理：BGR→RGB + /255 + HWC→CHW + NCHW 一次完成。
+    // 用 cv::dnn::blobFromImage（OpenCV 内部优化/SIMD，避免逐像素分支），
+    // 替换原先 640×640×3 的逐像素手工重排循环，显著降低检测线程的 CPU 开销。
+    // padded 已是 inputW×inputH（letterbox 或 squash），故此处不再缩放。
+    cv::Mat blob = cv::dnn::blobFromImage(padded, 1.0 / 255.0,
+                                          cv::Size(inputW, inputH),
+                                          cv::Scalar(0, 0, 0),
+                                          /*swapRB=*/true, /*crop=*/false);
+    std::memcpy(hostInput.data(), blob.ptr<float>(),
+                std::min(inputSize, blob.total() * blob.elemSize()));
 
     cudaMemcpyAsync(buffers[0], hostInput.data(), inputSize, cudaMemcpyHostToDevice, stream);
 }
@@ -304,12 +300,12 @@ void TrtYolo::postprocess(std::vector<Detection>& results)
         results.push_back(det);
     }
 
-    // 诊断日志：前 3 次逐通道详查；此后每 25 帧打印一次最高置信度，
+    // 诊断日志：前 3 次逐通道详查；此后每 100 帧打印一次最高置信度，
     // 便于判断引擎是否“整段失效”（而非恰好前几帧无人）。
     static int s_forwardCount = 0;
     ++s_forwardCount;
     const bool verbose = (s_forwardCount <= 3);
-    if (verbose || (s_forwardCount % 25 == 0)) {
+    if (verbose || (s_forwardCount % 100 == 0)) {
         qDebug() << "[TrtYolo] yolo12 format: boxes before NMS=" << boxes.size()
                  << "after NMS=" << results.size()
                  << "numPred=" << numPred

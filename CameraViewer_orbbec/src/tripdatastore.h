@@ -66,10 +66,19 @@ public:
                                  const QString &stationName, const QString &passengerId,
                                  const QDateTime &time, QString *error = nullptr) = 0;
 
+    /// 记录一次「上/下车文件夹」的重识别匹配结果（供实时查看）
+    virtual bool recordReidMatch(const QString &tripId,
+                                 const QString &boardPersonId, const QString &boardFolder,
+                                 const QString &alightPersonId, const QString &alightFolder,
+                                 double similarity, const QDateTime &time,
+                                 QString *error = nullptr) = 0;
+
     /// 查询某行程所有站点统计（按更新时间升序）
     virtual QVector<StopStat> stopStats(const QString &tripId) const = 0;
     /// 当前车厢内人数
     virtual int onboardCount(const QString &tripId) const = 0;
+    /// 最近一次行程（无论是否已结束）；不存在返回空串
+    virtual QString lastTrip() const = 0;
     /// 当前站的累计（内存镜像）
     virtual StopStat currentStop(const QString &tripId) const = 0;
 
@@ -115,6 +124,14 @@ public:
     bool recordAlighting(const QString &tripId, const QString &stationId,
                          const QString &stationName, const QString &passengerId,
                          const QDateTime &time, QString *error = nullptr) override;
+
+    bool recordReidMatch(const QString &tripId,
+                         const QString &boardPersonId, const QString &boardFolder,
+                         const QString &alightPersonId, const QString &alightFolder,
+                         double similarity, const QDateTime &time,
+                         QString *error = nullptr) override;
+
+    QString lastTrip() const override;
 
     QVector<StopStat> stopStats(const QString &tripId) const override;
     int onboardCount(const QString &tripId) const override;

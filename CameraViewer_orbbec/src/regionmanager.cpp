@@ -43,6 +43,18 @@ void RegionManager::clearRegions()
     }
 }
 
+void RegionManager::setAllEntryDirection(EntryDirection dir)
+{
+    bool changed = false;
+    for (auto &r : m_regions) {
+        if (r.entryDirection != dir) {
+            r.entryDirection = dir;
+            changed = true;
+        }
+    }
+    if (changed) emit regionsChanged();
+}
+
 const QVector<DetectionRegion> &RegionManager::regions() const
 {
     return m_regions;

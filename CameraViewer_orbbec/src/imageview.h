@@ -34,11 +34,6 @@ public:
     void finishCurrentPolygon();
     void finishCurrentRectangle(); // 完成当前矩形绘制
 
-    // ===== 深度数据（供鼠标悬停查询像素坐标 → 距离/高度）=====
-    /// 传入与显示伪彩图同分辨率的深度（CV_16U，毫米；0 表示无效）
-    void setDepthData(int width, int height, const quint16 *dataMM);
-    void clearDepthData() { m_depthEnabled = false; m_depthMM.clear(); }
-
     // ===== 虚拟门线管理（图像归一化/图像坐标，两端点）=====
     void setDoorLines(const QVector<QPair<QPointF, QPointF>> &lines);
     void clearDoorLines();
@@ -88,12 +83,6 @@ private:
     QVector<QPair<QPointF, QPointF>> m_doorLines;  // 虚拟门线（图像坐标，两端点）
     QColor m_currentDrawColor = QColor(0, 255, 0);
     QPoint m_mousePos;                             // 鼠标当前位置（用于实时预览）
-
-    // 深度悬停查询
-    bool m_depthEnabled {false};
-    int m_depthW {0};
-    int m_depthH {0};
-    QVector<quint16> m_depthMM;                    // 深度原始值（毫米）
 
     // 矩形绘制
     bool m_rectDragging {false};                   // 是否正在拖拽矩形
