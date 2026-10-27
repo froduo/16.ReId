@@ -20,8 +20,10 @@
  *  若区域的 entryDirection == BottomToTop，则上述语义整体取反。
  */
 enum class ZoneEventType {
-    Boarding,    // 上车
-    Alighting    // 下车
+    Boarding,         // 上车
+    Alighting,        // 下车
+    BoardingInvalid,  // 上车折返（第三状态：上车穿越后未离开视野即反向穿越下车）
+    AlightingInvalid  // 下车折返（第四状态：下车穿越后未离开视野即反向穿越上车）
 };
 
 /**
@@ -223,6 +225,9 @@ public:
     void setMinOverlapArea(float area);
     /// 「同人反向穿越」冷却窗口（毫秒）
     void setReverseCooldownMs(qint64 ms);
+    /// 第三/四状态判定窗口（毫秒）：上/下车穿越后若在该窗口内、且未离开门线视野即发生
+    /// 反向穿越，则判定为「上车折返/下车折返」，不计入上下车总数（默认 8000）。
+    void setLingeringSettleMs(qint64 ms);
     /// 「同人同方向重复穿越」冷却窗口（毫秒）：抑制门线附近逗留/抖动造成的重复上下车
     void setSameDirCooldownMs(qint64 ms);
     /// 边界容差（归一化，兼容旧接口）
@@ -247,6 +252,8 @@ public:
      * 因此要求同一 track 被连续真实检测到 N 帧后才允许开始接近采样与建档。
      */
     void setMinTrackFrames(int frames);
+    /// 「自由访客」ReID 复用时间窗（毫秒）：超出视为不同人、新建 visitor（默认 30000）。
+    void setVisitorFreeMaxAgeMs(qint64 ms);
 
     /**
      * @brief 设置检测区域（每个区域派生出一条虚拟门线）
@@ -263,6 +270,8 @@ public:
 
     int boardingCount() const { return m_boardingCount; }
     int alightingCount() const { return m_alightingCount; }
+    int boardingInvalidCount() const { return m_boardingInvalidCount; }
+    int alightingInvalidCount() const { return m_alightingInvalidCount; }
     /// 恢复累计计数（程序重启后不清零）
     void setCounters(int boarding, int alighting);
     QVector<ZoneEvent> events() const { return m_events; }
@@ -277,6 +286,10 @@ public:
 signals:
     void boardingEvent(const ZoneEvent &event);
     void alightingEvent(const ZoneEvent &event);
+    /// 第三状态：上车折返（上车穿越后未离开视野即反向穿越下车，不计入上下车总数）
+    void boardingInvalidEvent(const ZoneEvent &event);
+    /// 第四状态：下车折返（下车穿越后未离开视野即反向穿越上车，不计入上下车总数）
+    void alightingInvalidEvent(const ZoneEvent &event);
     void zoneCrossingEvent(const ZoneEvent &event);
 
 private:
@@ -300,7 +313,23 @@ private:
     float  m_stitchRadius{0.14f};
     int    m_minTrackFrames{3};      // 建档/采样前的轨迹预热帧数
 
+    // 第三/四状态（上车折返/下车折返）判定窗口：与反向冷却相互独立，
+    // 离线视频判定（反向冷却=0）时仍需保留此窗口，用于识别「未离开视野即反向穿越」。
+    qint64 m_lingeringSettleMs{8000};
+
     // ===== 状态 =====
+    // 未结算穿越：已发出的上/下车事件，在当事人离开门线视野前若发生反向穿越，
+    // 则判定为「上车折返/下车折返」（第三/四状态），不计入上下车总数。
+    struct PendingCrossing {
+        int type{0};        // +1=上车, -1=下车
+        qint64 atMs{0};
+        int trackId{-1};
+        ZoneEvent evt;      // 原始事件（用于构造无效事件/回滚）
+    };
+    QMap<int, PendingCrossing> m_pendingByVisitor;   // visitorId -> 未结算穿越
+    int m_boardingInvalidCount{0};
+    int m_alightingInvalidCount{0};
+
     QVector<DoorLine> m_lines;
     QMap<int, DoorTrackedPerson> m_tracks;      // trackId -> 追踪状态
     QMap<int, int> m_trackToVisitor;            // trackId -> visitorId
@@ -314,6 +343,12 @@ private:
     // 防误判：记录每位访客最近一次「有效穿越」的时间与方向（+1=上车，-1=下车）
     QMap<int, qint64> m_lastCrossingMsByVisitor;
     QMap<int, int>    m_lastCrossingTypeByVisitor;
+
+    // visitor 最近被（创建/匹配）看到的时间：用于「自由访客」过期清理，避免门线附近
+    // 久未出现的旧 visitor 在几分钟后仍被新 track 误匹配（A→B→C 身份漂移）。
+    QMap<int, qint64> m_visitorLastSeenMs;
+    // 「自由访客」（lastType<=0）允许 ReID 复用的最大时间窗（毫秒）；在车访客不参与。
+    qint64 m_visitorFreeMaxAgeMs{30000};
 
     /// L3 轨迹拼接锚点：轨迹在门线附近断裂时记录其“外侧起点 + 速度预测”，
     /// 供随后出现的新轨迹在同一时间窗/空间邻域内续接，拼成一次完整穿越。
@@ -360,13 +395,23 @@ private:
                           const cv::Point2f &pos, qint64 nowMs);
 
     void pruneAnchors(qint64 nowMs);
+    /// 清理超时且未被复用的「自由访客」（lastType<=0），避免特征库无限增长与久远误匹配。
+    void pruneStaleVisitors(qint64 nowMs);
 
     void recordCrossing(int visitorId, int type, qint64 nowMs);
     bool isReverseInCooldown(int visitorId, int type, qint64 nowMs,
                              qint64 *outLastMs = nullptr, int *outLastType = nullptr) const;
 
+    /// 第三/四状态判定：若 visitor 存在「未结算」的相反方向穿越且在窗口内，则发射
+    /// 无效事件并回滚计数，返回 true；否则返回 false（由调用方继续正常结算）。
+    bool tryInvalidateReversal(DoorTrackedPerson &t, int trackId, const DoorLine &line,
+                               DoorSide from, DoorSide to, const cv::Point2f &crossPoint,
+                               const cv::Mat &rawFrame, qint64 nowMs, int newType);
+    /// 未结算穿越的「结算」：当事人已离开门线视野（重新武装），后续反向穿越视为真实新事件。
+    void settlePending(int visitorId);
+
     int matchOrCreateVisitor(const TrackedPerson &person, const cv::Mat &rawFrame,
-                             float signedSide);
+                             float signedSide, qint64 nowMs);
     cv::Mat extractFeature(const TrackedPerson &person, const cv::Mat &rawFrame) const;
 };
 

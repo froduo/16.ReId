@@ -386,6 +386,7 @@ QVector<TrackedPerson> PersonTracker::update(const QVector<cv::Rect> &detections
                                               const cv::Mat &frame,
                                               ReIDExtractor *reidExtractor)
 {
+    QMutexLocker locker(&m_mutex);   // 与主线程的 getTrack/状态同步串行化，避免 data race
     QVector<TrackedPerson> updatedTracks;
 
     // 每帧先假设所有轨迹都「未被真实检测」；匹配成功/新建轨迹再置回 true。

@@ -91,6 +91,30 @@ OfflineDetectForm::OfflineDetectForm(PersonDetector *detector,
                                      .arg(m_boardCount).arg(m_alightCount));
     });
 
+    // ===== 第三状态：上车折返（上车穿越后未离开视野即反向穿越下车）=====
+    connect(m_zoneMonitor, &ZoneMonitor::boardingInvalidEvent, this, [this](const ZoneEvent &evt) {
+        if (m_boardCount > 0) m_boardCount--;
+        m_trackDirection[evt.trackId] = QStringLiteral("上车折返(第三状态)");
+        LOG_WARN(QString("[OfflineDetect] ★ 上车折返(第三状态): track=%1 V%2, "
+                         "上车穿越后未离开视野即反向穿越下车，不计入上车总数")
+                     .arg(evt.trackId).arg(evt.visitorId));
+        if (m_labelInfo)
+            m_labelInfo->setText(QString("方向判定：上车 %1 次，下车 %2 次")
+                                     .arg(m_boardCount).arg(m_alightCount));
+    });
+
+    // ===== 第四状态：下车折返（下车穿越后未离开视野即反向穿越上车）=====
+    connect(m_zoneMonitor, &ZoneMonitor::alightingInvalidEvent, this, [this](const ZoneEvent &evt) {
+        if (m_alightCount > 0) m_alightCount--;
+        m_trackDirection[evt.trackId] = QStringLiteral("下车折返(第四状态)");
+        LOG_WARN(QString("[OfflineDetect] ★ 下车折返(第四状态): track=%1 V%2, "
+                         "下车穿越后未离开视野即反向穿越上车，不计入下车总数")
+                     .arg(evt.trackId).arg(evt.visitorId));
+        if (m_labelInfo)
+            m_labelInfo->setText(QString("方向判定：上车 %1 次，下车 %2 次")
+                                     .arg(m_boardCount).arg(m_alightCount));
+    });
+
     // ===== 视频判定定时器：边播放边检测，避免阻塞界面 =====
     m_videoTimer = new QTimer(this);
     connect(m_videoTimer, &QTimer::timeout, this, &OfflineDetectForm::onVideoTick);

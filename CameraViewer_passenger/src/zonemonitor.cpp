@@ -54,6 +54,7 @@ void ZoneMonitor::setStartConfirmFrames(int frames) { m_startConfirmFrames = qMa
 void ZoneMonitor::setMinOverlapArea(float area) { m_minOverlapArea = qMax(0.0f, area); }
 void ZoneMonitor::setReverseCooldownMs(qint64 ms) { m_reverseCooldownMs = qMax<qint64>(0, ms); }
 void ZoneMonitor::setSameDirCooldownMs(qint64 ms) { m_sameDirCooldownMs = qMax<qint64>(0, ms); }
+void ZoneMonitor::setLingeringSettleMs(qint64 ms) { m_lingeringSettleMs = qMax<qint64>(0, ms); }
 void ZoneMonitor::setEdgeMargin(float margin) { m_edgeMargin = qMax(0.0f, margin); }
 
 void ZoneMonitor::setLineDeadband(float d) { m_lineDeadband = qMax(0.0f, d); }
@@ -62,6 +63,7 @@ void ZoneMonitor::setSideConfirmFrames(int frames) { m_sideConfirmFrames = qMax(
 void ZoneMonitor::setInertiaMaxMs(qint64 ms) { m_inertiaMaxMs = qMax<qint64>(0, ms); }
 void ZoneMonitor::setStitchWindowMs(qint64 ms) { m_stitchWindowMs = qMax<qint64>(0, ms); }
 void ZoneMonitor::setMinTrackFrames(int frames) { m_minTrackFrames = qMax(1, frames); }
+void ZoneMonitor::setVisitorFreeMaxAgeMs(qint64 ms) { m_visitorFreeMaxAgeMs = qMax<qint64>(0, ms); }
 
 // ===== 门线构建 =====
 void ZoneMonitor::buildDoorLines(const QVector<DetectionRegion> &regions)
@@ -182,7 +184,7 @@ cv::Mat ZoneMonitor::extractFeature(const TrackedPerson &person, const cv::Mat &
 }
 
 int ZoneMonitor::matchOrCreateVisitor(const TrackedPerson &person, const cv::Mat &rawFrame,
-                                      float signedSide)
+                                      float signedSide, qint64 nowMs)
 {
     if (m_trackToVisitor.contains(person.trackId)) {
         return m_trackToVisitor[person.trackId];
@@ -206,6 +208,16 @@ int ZoneMonitor::matchOrCreateVisitor(const TrackedPerson &person, const cv::Mat
         const cv::Mat &storedFeature = it.value();
 
         const int lastType = m_lastCrossingTypeByVisitor.value(vid, 0);
+
+        // ===== 「自由访客」过期保护 =====
+        // 未上车（lastType<=0，即从未穿越或已下车）的 visitor 仅用于秒级轨迹断裂恢复；
+        // 若久未出现（超过 m_visitorFreeMaxAgeMs），视为不同乘客，跳过以免误并入。
+        if (lastType <= 0) {
+            const qint64 lastSeen = m_visitorLastSeenMs.value(vid, 0);
+            if (lastSeen <= 0 || (nowMs - lastSeen) > m_visitorFreeMaxAgeMs)
+                continue;
+        }
+
         if (fromInside) {
             // 下车：只匹配「上次上车（在车内）」的 visitor
             if (lastType <= 0) continue;
@@ -233,7 +245,21 @@ int ZoneMonitor::matchOrCreateVisitor(const TrackedPerson &person, const cv::Mat
 
     if (matchedVisitorId > 0) {
         m_trackToVisitor[person.trackId] = matchedVisitorId;
-        if (!reidFeature.empty()) m_visitorFeatures[matchedVisitorId] = reidFeature.clone();
+        m_visitorLastSeenMs[matchedVisitorId] = nowMs;
+        // ===== EMA 融合（避免直接覆盖导致 A→B→C 身份漂移）=====
+        // 以「旧特征为主」做递推平均：即使本次是误匹配，也不会把库存特征
+        // 整个拉向另一个人，从而抑制连锁误匹配。
+        if (!reidFeature.empty()) {
+            const cv::Mat oldFeat = m_visitorFeatures.value(matchedVisitorId);
+            if (!oldFeat.empty() && oldFeat.size() == reidFeature.size()) {
+                QVector<cv::Mat> seq;
+                seq.append(oldFeat);
+                seq.append(reidFeature);
+                m_visitorFeatures[matchedVisitorId] = ReIDExtractor::temporalFuse(seq, 0.3f);
+            } else {
+                m_visitorFeatures[matchedVisitorId] = reidFeature.clone();
+            }
+        }
         LOG_INFO(QString("[ZoneMonitor] ReID RE-ENTRY: Visitor V%1 matched (similarity=%2) with track %3")
                      .arg(matchedVisitorId).arg(bestSimilarity, 0, 'f', 2).arg(person.trackId));
         return matchedVisitorId;
@@ -242,6 +268,7 @@ int ZoneMonitor::matchOrCreateVisitor(const TrackedPerson &person, const cv::Mat
     const int newVisitorId = m_nextVisitorId++;
     m_trackToVisitor[person.trackId] = newVisitorId;
     if (!reidFeature.empty()) m_visitorFeatures[newVisitorId] = reidFeature.clone();
+    m_visitorLastSeenMs[newVisitorId] = nowMs;
     LOG_INFO(QString("[ZoneMonitor] New visitor V%1 created (track %2)")
                  .arg(newVisitorId).arg(person.trackId));
     return newVisitorId;
@@ -310,13 +337,12 @@ void ZoneMonitor::startCapture(DoorTrackedPerson &t, const TrackedPerson &p,
     t.stitched = false;
     t.seedLayer = RecoveryLayer::Realtime;
 
-    if (t.visitorId <= 0) t.visitorId = matchOrCreateVisitor(p, rawFrame, signedSide);
+    if (t.visitorId <= 0) t.visitorId = matchOrCreateVisitor(p, rawFrame, signedSide, nowMs);
 
     sampleCapture(t, p, rawFrame, MAX_FEATURE_SAMPLES);
 
     LOG_INFO(QString("[ZoneMonitor] START 接近门线: track=%1 V%2 region=%3 signed=%4 (开始整段采样)")
                  .arg(p.trackId).arg(t.visitorId).arg(line.regionId).arg(signedSide, 0, 'f', 4));
-    Q_UNUSED(nowMs);
 }
 
 void ZoneMonitor::stopCapture(DoorTrackedPerson &t)
@@ -383,24 +409,14 @@ void ZoneMonitor::emitCrossing(DoorTrackedPerson &t, int trackId, const DoorLine
         return;
     }
 
-    // 防误判：同人反向穿越冷却窗口（不计数）
-    // 注意：同方向连续穿越（如门线附近逗留导致的连续两次上车）不在此抑制，
-    // 每次真实穿越都应当计数，person 编号在 MainWindow 事件处理中每次 +1。
-    if (t.visitorId > 0) {
-        const int type = boarding ? +1 : -1;
-        qint64 lastMs = 0; int lastType = 0;
-        if (isReverseInCooldown(t.visitorId, type, nowMs, &lastMs, &lastType)) {
-            LOG_WARN(QString("[ZoneMonitor] SUPPRESS 反向穿越(疑似抖动/误判): V%1 track=%2 region=%3 "
-                             "本次=%4 startSigned=%5 exitSigned=%6 dy=%7 | 上次=%8 间隔=%9ms < 冷却=%10ms")
-                         .arg(t.visitorId).arg(trackId).arg(line.regionId)
-                         .arg(boarding ? "上车候选" : "下车候选")
-                         .arg(t.enterSigned, 0, 'f', 4).arg(sideExit, 0, 'f', 4).arg(dyMove, 0, 'f', 4)
-                         .arg(lastType > 0 ? "上车" : "下车")
-                         .arg(nowMs - lastMs).arg(m_reverseCooldownMs));
-            t.crossedEmitted = true;
-            stopCapture(t);
-            return;
-        }
+    // ===== 第三/四状态：未离开视野的反向穿越 → 上车折返/下车折返 =====
+    // 原「同人反向穿越冷却」升级为「无效穿越」判定：若上次穿越尚未结算
+    // （当事人未离开门线视野）即发生反向穿越，则上次穿越无效，两者均不计入总数。
+    // 同方向连续穿越（门线附近逗留导致的连续两次上车/下车）不在此列，仍各自计数。
+    if (t.visitorId > 0
+        && tryInvalidateReversal(t, trackId, line, from, to, crossPoint, rawFrame,
+                                 nowMs, boarding ? +1 : -1)) {
+        return;
     }
 
     const float centerY = line.center().y;
@@ -473,19 +489,41 @@ void ZoneMonitor::emitCrossing(DoorTrackedPerson &t, int trackId, const DoorLine
         m_boardingCount++;
         LOG_INFO(QString("[ZoneMonitor] ★ BOARDING (上车): V%1 region=%2 [%3] frames=%4")
                      .arg(evt.visitorId).arg(evt.regionId).arg(evt.recoveryName).arg(evt.trackFrames));
-        m_events.append(evt);
         emit boardingEvent(evt);
         emit zoneCrossingEvent(evt);
     } else {
         m_alightingCount++;
         LOG_INFO(QString("[ZoneMonitor] ★ ALIGHTING (下车): V%1 region=%2 [%3] frames=%4")
                      .arg(evt.visitorId).arg(evt.regionId).arg(evt.recoveryName).arg(evt.trackFrames));
-        m_events.append(evt);
         emit alightingEvent(evt);
         emit zoneCrossingEvent(evt);
     }
 
     recordCrossing(t.visitorId, boarding ? +1 : -1, nowMs);
+
+    // 记录「未结算穿越」：供第三/四状态判定（未离开视野即反向穿越时回滚本次计数）
+    if (t.visitorId > 0) {
+        PendingCrossing pend;
+        pend.type = boarding ? +1 : -1;
+        pend.atMs = nowMs;
+        pend.trackId = trackId;
+        pend.evt = evt;
+        m_pendingByVisitor.insert(t.visitorId, pend);
+    }
+
+    // ===== 内存治理：m_events 仅保留轻量元数据（诊断用），释放整段图像序列 =====
+    // 事件已通过 boardingEvent/alightingEvent/zoneCrossingEvent 派发完毕，MainWindow 已消费
+    // trackImages/trackFullFrames/特征并落盘。若不释放，每次上下车都会在 m_events 中长期
+    // 驻留「约 30 张裁剪图 + 30 张 960 宽整帧 + 30 特征 + 进入/离开整帧」，
+    // 长时间运行内存随上下车次数线性增长（单实例可达数 GB，导致整机卡顿）。
+    evt.trackImages.clear();
+    evt.trackFullFrames.clear();
+    evt.trackFeatures.clear();
+    evt.enterImage.release();
+    evt.exitImage.release();
+    evt.enterFeature.release();
+    evt.exitFeature.release();
+    m_events.append(evt);
 
     // 结算：本次接近窗口结束（需重新离开走廊后才再次武装）
     t.crossedEmitted = true;
@@ -635,6 +673,28 @@ void ZoneMonitor::pruneAnchors(qint64 nowMs)
     }
 }
 
+void ZoneMonitor::pruneStaleVisitors(qint64 nowMs)
+{
+    QList<int> stale;
+    for (auto it = m_visitorFeatures.begin(); it != m_visitorFeatures.end(); ++it) {
+        const int vid = it.key();
+        const int lastType = m_lastCrossingTypeByVisitor.value(vid, 0);
+        if (lastType > 0) continue;   // 在车访客需保留至下车，不参与过期清理
+        const qint64 lastSeen = m_visitorLastSeenMs.value(vid, 0);
+        if (lastSeen > 0 && (nowMs - lastSeen) > m_visitorFreeMaxAgeMs)
+            stale.append(vid);
+    }
+    for (const int vid : stale) {
+        m_visitorFeatures.remove(vid);
+        m_lastCrossingMsByVisitor.remove(vid);
+        m_lastCrossingTypeByVisitor.remove(vid);
+        m_visitorLastSeenMs.remove(vid);
+        m_pendingByVisitor.remove(vid);
+        LOG_INFO(QString("[ZoneMonitor] 自由访客 V%1 超时(%2ms)清理")
+                     .arg(vid).arg(m_visitorFreeMaxAgeMs));
+    }
+}
+
 // ===== 主处理 =====
 void ZoneMonitor::processFrame(QVector<TrackedPerson> &persons,
                                const cv::Mat &rawFrame,
@@ -645,6 +705,7 @@ void ZoneMonitor::processFrame(QVector<TrackedPerson> &persons,
 
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     pruneAnchors(nowMs);
+    pruneStaleVisitors(nowMs);
 
     // 刷新门线定义（动态响应区域变化）
     const auto regions = regionManager->regions();
@@ -711,6 +772,7 @@ void ZoneMonitor::processFrame(QVector<TrackedPerson> &persons,
         if (li < 0) {
             // 远离所有门线：重新武装（允许下一次真实穿越被计数），并停止采样
             if (t.state == CaptureState::Capturing) stopCapture(t);
+            settlePending(t.visitorId);   // 已离开门线视野 → 上次穿越结算（确认为真实上下车）
             t.crossedEmitted = false;
             t.firstSide = DoorSide::Unknown;
             t.stitched = false;
@@ -744,15 +806,25 @@ void ZoneMonitor::processFrame(QVector<TrackedPerson> &persons,
                     t.sideConfirm++;
                 }
                 if (t.sideConfirm >= m_sideConfirmFrames) {
-                    if (line.withinSpan(pos, 0.15f) && !t.crossedEmitted) {
+                    if (line.withinSpan(pos, 0.15f)) {
                         cv::Point2f crossPt;
                         if (!segIntersect(t.prevCenter, pos, line.a, line.b, crossPt))
                             crossPt = projectOnLine(pos, line);
-                        t.lastCrossX = crossPt.x;
-                        t.lastCrossY = crossPt.y;
-                        emitCrossing(t, p.trackId, line, t.lastSide, cand,
-                                     RecoveryLayer::Realtime, crossPt, rawFrame,
-                                     nowMs, t.coasted, t.stitched);
+                        if (!t.crossedEmitted) {
+                            t.lastCrossX = crossPt.x;
+                            t.lastCrossY = crossPt.y;
+                            emitCrossing(t, p.trackId, line, t.lastSide, cand,
+                                         RecoveryLayer::Realtime, crossPt, rawFrame,
+                                         nowMs, t.coasted, t.stitched);
+                        } else {
+                            // 已结算但仍在走廊内反向翻转 → 未离开视野的反向穿越（第三/四状态）
+                            const bool aToB = (t.lastSide == DoorSide::ASide && cand == DoorSide::BSide);
+                            const bool bToA = (t.lastSide == DoorSide::BSide && cand == DoorSide::ASide);
+                            const bool boardingRev = (line.entry == EntryDirection::TopToBottom) ? bToA : aToB;
+                            tryInvalidateReversal(t, p.trackId, line, t.lastSide, cand,
+                                                  crossPt, rawFrame, nowMs,
+                                                  boardingRev ? +1 : -1);
+                        }
                     }
                     t.lastSide = cand;
                     t.pendingSide = DoorSide::Unknown;
@@ -787,6 +859,7 @@ void ZoneMonitor::processFrame(QVector<TrackedPerson> &persons,
             }
         } else if (std::fabs(signedSide) > m_corridorHalf * 1.6f) {
             // 已结算且远离门线 → 重新武装，等待下一次真实穿越
+            settlePending(t.visitorId);   // 已离开门线视野 → 上次穿越结算
             t.crossedEmitted = false;
             t.firstSide = DoorSide::Unknown;
             t.lastSide = (cand != DoorSide::Unknown) ? cand : t.lastSide;
@@ -828,7 +901,11 @@ void ZoneMonitor::reset()
     m_nextVisitorId = 1;
     m_lastCrossingMsByVisitor.clear();
     m_lastCrossingTypeByVisitor.clear();
+    m_visitorLastSeenMs.clear();
     m_anchors.clear();
+    m_pendingByVisitor.clear();
+    m_boardingInvalidCount = 0;
+    m_alightingInvalidCount = 0;
     LOG_INFO("[ZoneMonitor] All state reset");
 }
 
@@ -838,6 +915,8 @@ void ZoneMonitor::forgetVisitor(int visitorId)
     m_visitorFeatures.remove(visitorId);
     m_lastCrossingMsByVisitor.remove(visitorId);
     m_lastCrossingTypeByVisitor.remove(visitorId);
+    m_visitorLastSeenMs.remove(visitorId);
+    m_pendingByVisitor.remove(visitorId);
     LOG_INFO(QString("[ZoneMonitor] 乘客 V%1 下车结束，已清除 ReID 身份（下次出现将新建）")
                  .arg(visitorId));
 }
@@ -862,4 +941,104 @@ bool ZoneMonitor::isReverseInCooldown(int visitorId, int type, qint64 nowMs,
 
     if (lastType == 0 || lastType == type) return false;
     return (nowMs - lastMs) < m_reverseCooldownMs;
+}
+
+// ===== 第三/四状态（上车折返/下车折返）=====
+bool ZoneMonitor::tryInvalidateReversal(DoorTrackedPerson &t, int trackId,
+                                        const DoorLine &line, DoorSide from, DoorSide to,
+                                        const cv::Point2f &crossPoint, const cv::Mat &rawFrame,
+                                        qint64 nowMs, int newType)
+{
+    Q_UNUSED(from);
+    if (t.visitorId <= 0) return false;
+
+    auto it = m_pendingByVisitor.find(t.visitorId);
+    if (it == m_pendingByVisitor.end()) return false;
+
+    PendingCrossing &pend = it.value();
+    // 无有效类型或已超时 → 视为已结算，清掉遗留即可
+    if (pend.type == 0 || (nowMs - pend.atMs) > m_lingeringSettleMs) {
+        m_pendingByVisitor.erase(it);
+        return false;
+    }
+
+    // 同方向连续穿越（门线附近逗留导致两次同向）不算「无效反向」，仍各自计数
+    if (pend.type == newType) return false;
+
+    // 反向穿越且未离开视野 → 上次穿越无效（第三/四状态）
+    ZoneEvent inv = pend.evt;
+    inv.type = (pend.type > 0) ? ZoneEventType::BoardingInvalid
+                               : ZoneEventType::AlightingInvalid;
+    inv.exitTime = QDateTime::currentDateTime();
+    inv.exitSide = sideCode(to);
+    inv.exitImage = rawFrame.empty() ? cv::Mat() : rawFrame.clone();
+    inv.exitBbox = t.lastBbox;
+    inv.crossNormX = crossPoint.x;
+    inv.crossNormY = crossPoint.y;
+    inv.sideExit = line.signedSide(crossPoint);
+    inv.suppressed = false;
+    inv.suppressReason.clear();
+
+    const bool wasBoarding = (pend.type > 0);
+    if (wasBoarding) {
+        if (m_boardingCount > 0) m_boardingCount--;
+        m_boardingInvalidCount++;
+    } else {
+        if (m_alightingCount > 0) m_alightingCount--;
+        m_alightingInvalidCount++;
+    }
+
+    LOG_WARN(QString("[ZoneMonitor] ★ %1 (第三/四状态): V%2 track=%3 region=%4 "
+                     "上/下车穿越后未离开视野即反向穿越，不计入总数 | "
+                     "上次=%5 → 本次=%6 间隔=%7ms（窗口=%8ms）")
+                 .arg(wasBoarding ? "BOARDING_INVALID(上车折返)" : "ALIGHTING_INVALID(下车折返)")
+                 .arg(t.visitorId).arg(trackId).arg(line.regionId)
+                 .arg(wasBoarding ? "上车" : "下车")
+                 .arg(newType > 0 ? "上车" : "下车")
+                 .arg(nowMs - pend.atMs).arg(m_lingeringSettleMs));
+
+    if (wasBoarding) emit boardingInvalidEvent(inv);
+    else             emit alightingInvalidEvent(inv);
+    emit zoneCrossingEvent(inv);
+
+    // 内存治理：折返事件同样只保留元数据，释放图像序列（避免 m_events 累积整段图像）
+    inv.trackImages.clear();
+    inv.trackFullFrames.clear();
+    inv.trackFeatures.clear();
+    inv.enterImage.release();
+    inv.exitImage.release();
+    inv.enterFeature.release();
+    inv.exitFeature.release();
+    m_events.append(inv);
+
+    m_pendingByVisitor.erase(it);
+
+    // 结算本次（视为一次无效穿越，不发射正常上/下车事件）
+    t.crossedEmitted = true;
+    t.firstSide = to;
+    t.lastSide = to;
+    t.pendingSide = DoorSide::Unknown;
+    t.sideConfirm = 0;
+    stopCapture(t);
+    t.enterTime = QDateTime();
+    recordCrossing(t.visitorId, newType, nowMs);
+    return true;
+}
+
+void ZoneMonitor::settlePending(int visitorId)
+{
+    if (visitorId <= 0) return;
+    // 离开门线视野后不再「立即」清除未结算穿越记录：
+    // 折返（上/下车穿越后未离开视野即反向穿越）的判定窗口是 m_lingeringSettleMs，
+    // 若在窗口内反向穿越仍应判为第三/四状态（上车折返/下车折返）。
+    // 立即清除会导致 person_338 这类「上车穿越后短暂远离门线（侧别波动）再折返」
+    // 被误判为独立的「下车」事件。
+    // pending 的清理统一交给：
+    //   1) tryInvalidateReversal 的窗口超时检查（> m_lingeringSettleMs 自动 erase）；
+    //   2) forgetVisitor（下车结束）；
+    //   3) pruneStaleVisitors（自由访客超时）。
+    if (m_pendingByVisitor.contains(visitorId)) {
+        LOG_INFO(QString("[ZoneMonitor] V%1 已远离门线视野（pending 保留 %2ms 折返窗口）")
+                     .arg(visitorId).arg(m_lingeringSettleMs));
+    }
 }

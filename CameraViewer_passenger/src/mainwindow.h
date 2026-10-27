@@ -7,6 +7,9 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QTableWidget>
+#include <QScrollArea>
+#include <QRadioButton>
+#include <QButtonGroup>
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QStorageInfo>
@@ -42,6 +45,7 @@
 #include "version.h"
 #include "backgroundmodel.h"
 #include <QThread>
+#include <QDialog>
 
 class QNetworkAccessManager;
 class StatusWebServer;
@@ -63,8 +67,6 @@ struct FadingLabel {
 struct VisitorRecord {
     int visitorId;            // 唯一访客 ID（持久化）
     cv::Mat reidFeature;      // ReID 特征（用于重入匹配）
-    cv::Mat enterImage;       // 进入时的图像
-    cv::Mat exitImage;        // 离开时的图像
     QDateTime enterTime;      // 进入时间
     QDateTime exitTime;       // 离开时间
     bool isInside;            // 当前是否在区域内
@@ -88,6 +90,7 @@ struct PersonEventRow {
     QDateTime time;             // 上/下车发生时间
     int matchedPersonId{-1};    // 匹配到的对方 person 序号（未匹配=-1）
     float similarity{0.0f};
+    int manualConfirm{0};       // 人工确认：0=未确认, 1=匹配正确, 2=匹配错误
 };
 
 class MainWindow : public QMainWindow
@@ -100,6 +103,9 @@ public:
 
     /// 自动化/调试：直接加载视频文件并按指定倍速开始播放（跳过文件对话框）
     void autoPlayVideo(const QString &path, double speed);
+
+    /// Web 前端控制指令处理（由 StatusWebServer::controlRequested 信号触发）
+    void webControl(const QString &action, const QJsonObject &params);
 
 private slots:
     void onToggleCapture();
@@ -125,6 +131,10 @@ private slots:
     // 关于 / 版本信息、检查更新
     void onAbout();
     void onCheckUpdate();
+
+    // 匹配细节对话框（上/下车匹配对，每 3 秒刷新）
+    void onToggleMatchDetail();
+    void refreshMatchDetail();
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -160,6 +170,17 @@ private:
     // 原始 BGR 帧缓存（用于 ReID 图像绘制和保存）
     cv::Mat m_currentRawFrame;
     QMutex m_rawFrameMutex;
+
+    // ===== 视频时间校准（OCR 识别视频右下角时间戳，加载视频时校准一次）=====
+    qint64 m_videoTimeOffsetMs{0};      // 视频时间 - 系统时间 的偏移（毫秒）
+    bool m_videoTimeCalibrated{false};  // 是否已成功校准
+    int m_videoTimeCalibAttempts{0};    // 已尝试 OCR 的帧数（限制重试，避免持续开销）
+    /// 返回校准后的时间（未校准或非视频模式时原样返回）
+    QDateTime calibratedTime(const QDateTime &t) const;
+    /// 加载视频后首帧调用：OCR 识别右下角时间戳并计算偏移（仅校准一次）
+    void tryCalibrateVideoTime(const cv::Mat &frame);
+    /// 七段数码管 OCR：从 ROI 识别 "YYYY-MM-DD HH:MM:SS" 数字时间
+    bool ocrVideoTimestamp(const cv::Mat &roi, QDateTime &out) const;
 
     // 主界面 ImageView
     ImageView* m_imageView{nullptr};
@@ -199,6 +220,23 @@ private:
     VisitorLog *m_visitorLog{nullptr};
     QTimer *m_visitorSaveTimer{nullptr};
     static constexpr int VISITOR_SAVE_INTERVAL_MS = 60000; // 每60秒自动保存
+
+    // ===== 匹配细节对话框（每 3 秒刷新上/下车匹配对，供人工核查）=====
+    QDialog *m_matchDetailDialog{nullptr};
+    QTableWidget *m_matchDetailTable{nullptr};
+    QTimer *m_matchDetailTimer{nullptr};
+    QScrollArea *m_matchBoardScroll{nullptr};   // 上车图片滚动区（多图一行）
+    QScrollArea *m_matchAlightScroll{nullptr};  // 下车图片滚动区（多图一行）
+    QWidget *m_matchBoardStrip{nullptr};        // 上车图片内容容器（横向排列多张缩略图）
+    QWidget *m_matchAlightStrip{nullptr};       // 下车图片内容容器
+    QPushButton *m_exportTrainBtn{nullptr}; // 导出人工确认正确的匹配对（OSNet 训练数据）
+    void initMatchDetailDialog();
+    /// 匹配细节表格当前行切换 → 刷新上/下车「全部图片」缩略图
+    void onMatchDetailRowChanged(int row);
+    /// 人工确认单选按钮变化 → 写回 PersonEventRow 并持久化
+    void onManualConfirmChanged(int row, int index);
+    /// 导出人工确认「正确」的匹配对为 OSNet 训练数据
+    void onExportTrainData();
 
     // 淡出标签管理
     QMap<int, FadingLabel> m_fadingLabels;
@@ -256,6 +294,7 @@ private:
     };
 
     PersonFolder *m_personFolder{nullptr};
+    QString m_archiveSessionDir;   // 当前归档会话目录（跨视频复用，点「清除计数」时才更新）
     QThread *m_folderMatchThread{nullptr};
     FolderMatchWorker *m_folderMatchWorker{nullptr};
     quint64 m_folderMatchJobCounter{0};
@@ -270,6 +309,9 @@ private:
     void pushWebStatus();
 
     void initPersonFolder();
+    /// 确保当前归档会话目录存在：只要未「清除计数」，跨视频/实时统一复用同一目录
+    /// reuseLast=true 时优先复用上次会话目录（重启后不新建空目录）；false 强制新建
+    void ensureArchiveSessionDir(bool reuseLast = true);
     /// 会话状态持久化：人员进出记录 + 上车目录登记 + 计数（重启后恢复，人工清零才归零）
     void saveSessionState();
     void loadSessionState();

@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version='1.0' encoding='utf-8'?>
 <ui version="4.0">
  <class>MainWindow</class>
  <widget class="QMainWindow" name="MainWindow">
@@ -30,7 +30,7 @@
     <property name="bottomMargin">
      <number>10</number>
     </property>
-    <!-- ===== 顶部工具栏（两行：采集/播放控制 + 区域/方向/状态） ===== -->
+    
     <item>
      <widget class="QFrame" name="toolBarFrame">
       <property name="sizePolicy">
@@ -61,13 +61,13 @@
        <property name="bottomMargin">
         <number>4</number>
        </property>
-       <!-- 第一行：采集 / 视频播放控制 -->
+       
        <item>
         <layout class="QHBoxLayout" name="toolBarRow1">
          <property name="spacing">
           <number>8</number>
          </property>
-         <!-- 启动/停止采集 Toggle 按钮 -->
+         
          <item>
           <widget class="QPushButton" name="btnToggle">
            <property name="minimumSize">
@@ -81,7 +81,7 @@
            </property>
           </widget>
          </item>
-         <!-- 保存图像按钮 -->
+         
          <item>
           <widget class="QPushButton" name="btnSave">
            <property name="minimumSize">
@@ -95,7 +95,7 @@
            </property>
           </widget>
          </item>
-         <!-- 选择视频按钮 -->
+         
          <item>
           <widget class="QPushButton" name="btnSelectVideo">
            <property name="minimumSize">
@@ -109,7 +109,7 @@
            </property>
           </widget>
          </item>
-         <!-- 视频倍速选择（1x~6x，实际速度上限=检测程序最大速率） -->
+         
          <item>
           <widget class="QComboBox" name="cmbVideoSpeed">
            <property name="minimumSize">
@@ -123,7 +123,7 @@
            </property>
           </widget>
          </item>
-         <!-- 开始播放/停止播放按钮（视频文件模式：停止后再次开始将从暂停处接续播放） -->
+         
          <item>
           <widget class="QPushButton" name="btnPlay">
            <property name="minimumSize">
@@ -143,7 +143,7 @@
            </property>
           </widget>
          </item>
-         <!-- 自动保存开关 -->
+         
          <item>
           <widget class="QCheckBox" name="chkAutoSave">
            <property name="text">
@@ -151,7 +151,7 @@
            </property>
           </widget>
          </item>
-         <!-- 离线检测按钮 -->
+         
          <item>
           <widget class="QPushButton" name="btnOfflineDetect">
            <property name="minimumSize">
@@ -165,7 +165,7 @@
            </property>
           </widget>
          </item>
-         <!-- 系统配置按钮 -->
+         
          <item>
           <widget class="QPushButton" name="btnSettings">
            <property name="minimumSize">
@@ -182,7 +182,7 @@
            </property>
           </widget>
          </item>
-         <!-- 弹簧 -->
+         
          <item>
           <spacer name="toolBarRow1Spacer">
            <property name="orientation">
@@ -198,13 +198,13 @@
          </item>
         </layout>
        </item>
-       <!-- 第二行：区域 / 方向 / 采集信息 / 相机状态 -->
+       
        <item>
         <layout class="QHBoxLayout" name="toolBarRow2">
          <property name="spacing">
           <number>8</number>
          </property>
-         <!-- 绘制上下车分界线按钮 -->
+         
          <item>
           <widget class="QPushButton" name="btnDrawRegion">
            <property name="minimumSize">
@@ -218,7 +218,7 @@
            </property>
           </widget>
          </item>
-         <!-- 清除区域按钮 -->
+         
          <item>
           <widget class="QPushButton" name="btnClearRegion">
            <property name="minimumSize">
@@ -232,7 +232,7 @@
            </property>
           </widget>
          </item>
-         <!-- 进入方向标签 -->
+         
          <item>
           <widget class="QLabel" name="label_entryDir">
            <property name="text">
@@ -243,7 +243,7 @@
            </property>
           </widget>
          </item>
-         <!-- 进入方向下拉框 -->
+         
          <item>
           <widget class="QComboBox" name="cmbEntryDirection">
            <property name="minimumSize">
@@ -267,7 +267,7 @@
            </item>
           </widget>
          </item>
-         <!-- 分隔线 -->
+         
          <item>
           <widget class="QFrame" name="sep1">
            <property name="frameShape">
@@ -281,8 +281,105 @@
            </property>
           </widget>
          </item>
-         <!-- 采集信息 -->
+         
          <item>
+          <widget class="QGroupBox" name="groupBox_status">
+           <property name="styleSheet">
+            <string notr="true">QGroupBox { border: 1px solid #7c4dff; border-radius: 4px; margin-top: 12px; padding: 2px 6px; background-color: rgba(30,10,50,0.25); } QGroupBox::title { color: #b388ff; font-family: 'Consolas'; font-size: 10px; font-weight: bold; subcontrol-origin: margin; left: 8px; padding: 0 4px; top: -2px; }</string>
+           </property>
+           <property name="title">
+            <string>◆ 相机状态</string>
+           </property>
+           <layout class="QHBoxLayout" name="statusLayout">
+            <property name="spacing">
+             <number>6</number>
+            </property>
+            <property name="leftMargin">
+             <number>8</number>
+            </property>
+            <property name="topMargin">
+             <number>10</number>
+            </property>
+            <property name="rightMargin">
+             <number>8</number>
+            </property>
+            <property name="bottomMargin">
+             <number>4</number>
+            </property>
+            <item>
+             <widget class="QLabel" name="label_camStatus">
+              <property name="styleSheet">
+               <string notr="true">color: #ef5350; font-family: 'Consolas'; font-size: 12px; font-weight: bold;</string>
+              </property>
+              <property name="text">
+               <string>● 相机: OFFLINE</string>
+              </property>
+             </widget>
+            </item>
+            
+            
+            
+           </layout>
+          </widget>
+         </item>
+         
+         <item>
+          <widget class="QFrame" name="sep2">
+           <property name="frameShape">
+            <enum>QFrame::VLine</enum>
+           </property>
+           <property name="frameShadow">
+            <enum>QFrame::Sunken</enum>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">color: #2a3f5f;</string>
+           </property>
+          </widget>
+         </item>
+         
+         
+         <item>
+          <spacer name="toolBarRow2Spacer">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    
+    <item>
+     <layout class="QHBoxLayout" name="imageLayout">
+      <property name="spacing">
+       <number>8</number>
+      </property>
+      <item>
+       <widget class="QGraphicsView" name="imageView">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+          <horstretch>14</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>360</width>
+          <height>300</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      
+      <item><layout class="QVBoxLayout" name="rightColumnLayout"><property name="spacing"><number>8</number></property><item>
           <widget class="QGroupBox" name="groupBox_info">
            <property name="styleSheet">
             <string notr="true">QGroupBox { border: 1px solid #00e5ff; border-radius: 4px; margin-top: 12px; padding: 2px 6px; background-color: rgba(0,40,50,0.25); } QGroupBox::title { color: #00e5ff; font-family: 'Consolas'; font-size: 10px; font-weight: bold; subcontrol-origin: margin; left: 8px; padding: 0 4px; top: -2px; }</string>
@@ -290,9 +387,9 @@
            <property name="title">
             <string>◆ 采集信息</string>
            </property>
-           <layout class="QHBoxLayout" name="infoLayout">
+           <layout class="QVBoxLayout" name="infoLayout">
             <property name="spacing">
-             <number>6</number>
+             <number>2</number>
             </property>
             <property name="leftMargin">
              <number>8</number>
@@ -349,101 +446,7 @@
            </layout>
           </widget>
          </item>
-         <!-- 分隔线 -->
          <item>
-          <widget class="QFrame" name="sep2">
-           <property name="frameShape">
-            <enum>QFrame::VLine</enum>
-           </property>
-           <property name="frameShadow">
-            <enum>QFrame::Sunken</enum>
-           </property>
-           <property name="styleSheet">
-            <string notr="true">color: #2a3f5f;</string>
-           </property>
-          </widget>
-         </item>
-         <!-- 相机状态 -->
-         <item>
-          <widget class="QGroupBox" name="groupBox_status">
-           <property name="styleSheet">
-            <string notr="true">QGroupBox { border: 1px solid #7c4dff; border-radius: 4px; margin-top: 12px; padding: 2px 6px; background-color: rgba(30,10,50,0.25); } QGroupBox::title { color: #b388ff; font-family: 'Consolas'; font-size: 10px; font-weight: bold; subcontrol-origin: margin; left: 8px; padding: 0 4px; top: -2px; }</string>
-           </property>
-           <property name="title">
-            <string>◆ 相机状态</string>
-           </property>
-           <layout class="QHBoxLayout" name="statusLayout">
-            <property name="spacing">
-             <number>6</number>
-            </property>
-            <property name="leftMargin">
-             <number>8</number>
-            </property>
-            <property name="topMargin">
-             <number>10</number>
-            </property>
-            <property name="rightMargin">
-             <number>8</number>
-            </property>
-            <property name="bottomMargin">
-             <number>4</number>
-            </property>
-            <item>
-             <widget class="QLabel" name="label_camStatus">
-              <property name="styleSheet">
-               <string notr="true">color: #ef5350; font-family: 'Consolas'; font-size: 12px; font-weight: bold;</string>
-              </property>
-              <property name="text">
-               <string>● 相机: OFFLINE</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </widget>
-         </item>
-         <!-- 弹簧 -->
-         <item>
-          <spacer name="toolBarRow2Spacer">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>40</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-        </layout>
-       </item>
-      </layout>
-     </widget>
-    </item>
-    <!-- ===== 图像显示区域 ===== -->
-    <item>
-     <layout class="QHBoxLayout" name="imageLayout">
-      <property name="spacing">
-       <number>8</number>
-      </property>
-      <item>
-       <widget class="QGraphicsView" name="imageView">
-        <property name="sizePolicy">
-         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-          <horstretch>14</horstretch>
-          <verstretch>0</verstretch>
-         </sizepolicy>
-        </property>
-        <property name="minimumSize">
-         <size>
-          <width>360</width>
-          <height>300</height>
-         </size>
-        </property>
-       </widget>
-      </item>
-      <!-- 右侧人员进出记录面板 -->
-      <item>
        <widget class="QFrame" name="visitorPanel">
         <property name="sizePolicy">
          <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
@@ -459,7 +462,7 @@
         </property>
         <property name="maximumSize">
          <size>
-          <width>560</width>
+          <width>820</width>
           <height>16777215</height>
          </size>
         </property>
@@ -483,14 +486,47 @@
           <number>6</number>
          </property>
          <item>
-          <widget class="QLabel" name="label_visitorTitle">
-           <property name="text">
-            <string>◆ 人员进出记录</string>
-           </property>
-           <property name="styleSheet">
-            <string notr="true">color: #00e5ff; font-family: 'Consolas'; font-size: 13px; font-weight: bold; padding: 2px 0;</string>
-           </property>
-          </widget>
+          <layout class="QHBoxLayout" name="visitorTitleLayout">
+           <item>
+            <widget class="QLabel" name="label_visitorTitle">
+             <property name="text">
+              <string>◆ 人员进出记录</string>
+             </property>
+             <property name="styleSheet">
+              <string notr="true">color: #00e5ff; font-family: 'Consolas'; font-size: 13px; font-weight: bold; padding: 2px 0;</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="visitorTitleSpacer">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="QPushButton" name="btnMatchDetail">
+             <property name="text">
+              <string>匹配细节</string>
+             </property>
+             <property name="minimumSize">
+              <size>
+               <width>84</width>
+               <height>26</height>
+              </size>
+             </property>
+             <property name="toolTip">
+              <string>显示/隐藏 上/下车匹配细节（每 3 秒刷新）</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
          </item>
          <item>
           <widget class="QTableWidget" name="tableVisitors">
@@ -539,9 +575,9 @@
         </layout>
        </widget>
       </item>
-     </layout>
+     </layout></item></layout>
     </item>
-    <!-- ===== 底部状态栏 ===== -->
+    
     <item>
      <widget class="QFrame" name="statusBarFrame">
       <property name="sizePolicy">
@@ -605,7 +641,7 @@
        <item>
         <widget class="QLabel" name="captureStatusLabel">
          <property name="styleSheet">
-          <string notr="true">color: #b0bec5; font-family: 'Consolas'; font-size: 12px; font-weight: bold;</string>
+          <string notr="true">color: #d6e0ea; font-family: 'Consolas'; font-size: 13px; font-weight: bold;</string>
          </property>
          <property name="text">
           <string>状态: --</string>
@@ -625,11 +661,11 @@
          </property>
         </spacer>
        </item>
-       <!-- 程序版本号 -->
+       
        <item>
         <widget class="QLabel" name="versionLabel">
          <property name="styleSheet">
-          <string notr="true">color: #9aa7b8; font-family: 'Consolas'; font-size: 12px; font-weight: bold; padding: 0 8px;</string>
+          <string notr="true">color: #b7c5d6; font-family: 'Consolas'; font-size: 12px; font-weight: bold; padding: 0 8px;</string>
          </property>
          <property name="text">
           <string>版本: --</string>
@@ -654,12 +690,12 @@
     <property name="title">
      <string>关于</string>
     </property>
-    <addaction name="actionversion"/>
-    <addaction name="actionCheckUpdate"/>
+    <addaction name="actionversion" />
+    <addaction name="actionCheckUpdate" />
    </widget>
-   <addaction name="menuAbout"/>
+   <addaction name="menuAbout" />
   </widget>
-  <widget class="QStatusBar" name="statusbar"/>
+  <widget class="QStatusBar" name="statusbar" />
   <action name="actionversion">
    <property name="text">
     <string>版本信息</string>
@@ -671,6 +707,6 @@
    </property>
   </action>
  </widget>
- <resources/>
- <connections/>
+ <resources />
+ <connections />
 </ui>

@@ -333,7 +333,10 @@ void GrabThread::run()
         //    采集线程不再做整帧 cvtColor，显著降低每帧开销以逼近目标倍速。
         if (!m_uiBusy.load()) {
             m_uiBusy.store(true);
-            emit frameProcessed(frame, persons);
+            // 深拷贝：frame 是本线程复用的缓冲，跨线程(QueuedConnection)浅拷贝会与
+            // 下一帧 m_cap.read(frame) 共享底层 buffer，导致 data race / use-after-free，
+            // 表现为 av_frame_unref 释放时 free(): invalid pointer 崩溃。
+            emit frameProcessed(frame.clone(), persons);
         }
 
         // ===== 人物片段录制 =====

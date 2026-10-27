@@ -115,6 +115,19 @@ int main(int argc, char *argv[])
 {
     installCrashHandler();
 
+    // ===== 无界面模式（--headless）：供 NVIDIA 盒子 SSH 远程部署，不弹 Qt 窗口；
+    //      检测管线 + Web 状态服务照常运行，信息通过浏览器页面查看。 =====
+    bool headless = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--headless") == 0) {
+            headless = true;
+            break;
+        }
+    }
+    if (headless) {
+        qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
+    }
+
     QApplication a(argc, argv);
 
     if (!acquireSingleInstance()) {
@@ -146,7 +159,13 @@ int main(int argc, char *argv[])
     }
 
     MainWindow w;
-    w.show();
+    if (!headless) {
+        w.show();
+    } else {
+        std::fprintf(stderr,
+                     "[main] 无界面模式（--headless）已启动，"
+                     "请通过浏览器访问 http://<盒子IP>:8080 查看实时状态。\n");
+    }
     if (!autoPlayPath.isEmpty()) {
         w.autoPlayVideo(autoPlayPath, autoPlaySpeed);
     }

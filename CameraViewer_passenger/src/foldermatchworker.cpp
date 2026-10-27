@@ -13,10 +13,13 @@ FolderMatchWorker::FolderMatchWorker(QObject *parent)
 
 void FolderMatchWorker::setDeepReid(DeepReID *deep, bool use)
 {
-    QMetaObject::invokeMethod(this, [this, deep, use]() {
-        m_deep = deep;
-        m_useDeep = use;
-    }, Qt::QueuedConnection);
+    // 直接赋值（m_deep/m_useDeep 为简单指针/bool）：
+    // 初始化阶段（构造函数 initDeepReid）在 submit 之前调用，由 QThread::start 提供
+    // happens-before 保证；热重载时 m_deepReid 复用同一实例（指针不变），赋值幂等。
+    // 原 QueuedConnection 投递在后台线程事件循环尚未就绪时可能丢失，导致 m_deep 一直为空、
+    // 下车比对被“深度 ReID 后端不可用”跳过。
+    m_deep = deep;
+    m_useDeep = use;
 }
 
 void FolderMatchWorker::setMaxImagesPerFolder(int n)

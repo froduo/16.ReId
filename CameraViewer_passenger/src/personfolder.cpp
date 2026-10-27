@@ -72,6 +72,7 @@ void PersonFolder::reset()
     m_personTick.clear();
     m_personSeq.clear();
     m_boarding.clear();
+    m_invalid.clear();
     m_eventTime.clear();
     m_matchedWith.clear();
     m_matchedSim.clear();
@@ -132,6 +133,7 @@ QJsonObject PersonFolder::stateToJson() const
         p["id"] = pid;
         p["date"] = m_personDate.value(pid);
         p["boarding"] = m_boarding.value(pid, false);
+        p["invalid"] = m_invalid.value(pid, QString());
         p["time"] = m_eventTime.value(pid).toString(Qt::ISODateWithMs);
         p["matchedWith"] = m_matchedWith.value(pid, -1);
         p["matchedSim"] = static_cast<double>(m_matchedSim.value(pid, 0.0f));
@@ -146,6 +148,7 @@ void PersonFolder::stateFromJson(const QJsonObject &o)
     m_nextPersonId = qMax(1, o.value(QStringLiteral("nextPersonId")).toInt(1));
     m_personDate.clear();
     m_boarding.clear();
+    m_invalid.clear();
     m_eventTime.clear();
     m_matchedWith.clear();
     m_matchedSim.clear();
@@ -160,6 +163,8 @@ void PersonFolder::stateFromJson(const QJsonObject &o)
         m_personOrder.append(pid);
         m_personDate.insert(pid, p.value(QStringLiteral("date")).toString());
         m_boarding.insert(pid, p.value(QStringLiteral("boarding")).toBool());
+        const QString inv = p.value(QStringLiteral("invalid")).toString();
+        if (!inv.isEmpty()) m_invalid.insert(pid, inv);
         m_eventTime.insert(pid, QDateTime::fromString(
                                p.value(QStringLiteral("time")).toString(), Qt::ISODateWithMs));
         const int mw = p.value(QStringLiteral("matchedWith")).toInt(-1);
@@ -369,7 +374,9 @@ void PersonFolder::writeMarker(int personId)
     }
 
     QByteArray data;
-    if (m_boarding.contains(personId)) {
+    if (m_invalid.contains(personId)) {
+        data += QString("方向: %1\n").arg(m_invalid.value(personId)).toUtf8();
+    } else if (m_boarding.contains(personId)) {
         data += QString("方向: %1\n").arg(m_boarding.value(personId) ? "上车" : "下车").toUtf8();
     }
     if (m_eventTime.contains(personId)) {
@@ -400,9 +407,11 @@ void PersonFolder::writeSummary()
     data += "乘客列表汇总\n";
     data += "----------------------------------------\n";
     for (const int pid : m_personOrder) {
-        const QString dirText = m_boarding.contains(pid)
-                ? QString::fromUtf8(m_boarding.value(pid) ? "上车" : "下车")
-                : QStringLiteral("未判定");
+        const QString dirText = m_invalid.contains(pid)
+                ? m_invalid.value(pid)
+                : (m_boarding.contains(pid)
+                    ? QString::fromUtf8(m_boarding.value(pid) ? "上车" : "下车")
+                    : QStringLiteral("未判定"));
         QString matchText = QStringLiteral("未匹配");
         if (m_matchedWith.contains(pid)) {
             matchText = QString("已匹配 → %1")
@@ -439,6 +448,33 @@ void PersonFolder::setDirection(int personId, bool boarding, const QDateTime &ti
 
     LOG_INFO(QString("[PersonFolder] person_%1 方向判定: %2")
                  .arg(personId).arg(boarding ? "上车" : "下车"));
+}
+
+void PersonFolder::setInvalid(int personId, bool wasBoarding, const QDateTime &time)
+{
+    if (personId <= 0) return;
+    m_boarding.remove(personId);
+    m_invalid.insert(personId, wasBoarding ? QStringLiteral("上车折返") : QStringLiteral("下车折返"));
+    m_eventTime.insert(personId, time.isValid() ? time : QDateTime::currentDateTime());
+
+    const int vid = m_personToVisitor.value(personId, -1);
+    // 「上车折返」时该乘客的上车周期结束：解绑 visitorId（与下车路径一致），
+    // 避免同一 visitor 后续再次出现时被复用回旧 person 编号。
+    if (m_personToVisitor.contains(personId)) {
+        m_visitorToPerson.remove(m_personToVisitor.take(personId));
+    }
+
+    logEvent(personId, -1, vid,
+             wasBoarding ? QStringLiteral("方向判定=上车折返(第三状态)")
+                         : QStringLiteral("方向判定=下车折返(第四状态)"));
+
+    writeMarker(personId);
+    writeSummary();
+    closeVideo(personId);
+
+    LOG_INFO(QString("[PersonFolder] person_%1 方向判定回滚为: %2（不计入上下车总数）")
+                 .arg(personId)
+                 .arg(wasBoarding ? "上车折返" : "下车折返"));
 }
 
 void PersonFolder::markMatched(int boardPersonId, int alightPersonId,

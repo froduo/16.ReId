@@ -5,6 +5,7 @@
 #include <QMap>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QMutex>
 #include <opencv2/opencv.hpp>
 #include <memory>
 
@@ -104,6 +105,9 @@ public:
                                   ReIDExtractor *reidExtractor = nullptr);
     QVector<TrackedPerson> getActiveTracks() const;
     TrackedPerson *getTrack(int trackId);
+    /// 跨线程访问锁：update() 在采集线程调用，getTrack/状态同步在主线程调用。
+    /// 调用方在访问 track 期间应持有此锁，避免 data race 导致 cv::Mat 释放崩溃。
+    QMutex* mutex() { return &m_mutex; }
 
     // ===== 配置接口 =====
     void setIouThreshold(float threshold) { m_iouThreshold = threshold; }
@@ -140,6 +144,7 @@ public:
     int gallerySize() const { return m_lostGallery.size(); }
 
 private:
+    mutable QMutex m_mutex;      // 保护 m_tracks 的跨线程访问（update vs getTrack/状态同步）
     QMap<int, TrackedPerson> m_tracks;
     int m_nextId;
     float m_iouThreshold;

@@ -118,3 +118,26 @@ passenger_videos/
 passenger_dataset/
 passenger_dataset_all/
 passenger_clips/
+
+# ----- 本次新增：离线数据 / 生成物 / 副本 / 训练数据集（2026-10-27） -----
+auto_pipeline/
+_diag/
+_remote/
+class_check/
+*.tar.gz
+*.orig88
+CameraViewer_orbbec (copy)/
+CameraViewer_orbbec/.conda_envs/
+CameraViewer/deploy/
+passenger_reid_dataset/
+passenger_reid_dataset_v2/
+passenger_reid_dataset_v3/
+passenger image/
+manual_pairs.json
+manual_pairs_*.json
+match_result.json
+match_result_*.json
+review.json
+match_review.html
+pairing_tool.html
+pairing_tool_*.html

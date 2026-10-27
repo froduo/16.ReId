@@ -21,9 +21,15 @@
 #include <QPair>
 #include <opencv2/opencv.hpp>
 #include <QHeaderView>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QComboBox>
+#include <QFileDialog>
 #include "overlaytext.h"
 #include "statuswebserver.h"
+#include <QBuffer>
 
+#include <algorithm>
 #include <cmath>
 
 // 旧链路（PassengerBook 特征匹配 + passenger/P{id}_* 序列 + visitor_V{id}/* 逐帧 + 上下车 mp4）
@@ -148,6 +154,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->btnOfflineDetect, &QPushButton::clicked, this, &MainWindow::onOfflineDetect);
     connect(ui->btnSettings, &QPushButton::clicked, this, &MainWindow::onSetParams);
 
+    // 匹配细节按钮：点击切换显示上/下车匹配对对话框（每 3 秒刷新，不影响匹配检测）
+    if (ui->btnMatchDetail) {
+        connect(ui->btnMatchDetail, &QPushButton::clicked, this, &MainWindow::onToggleMatchDetail);
+    }
+
     // ImageView 多边形绘制完成信号
     if (m_imageView) {
         connect(m_imageView, &ImageView::polygonCompleted, this, &MainWindow::onPolygonCompleted);
@@ -237,22 +248,25 @@ MainWindow::MainWindow(QWidget *parent)
     initVisitorLog();
     initPassengerBook();
     initTripStore();
-    initPersonFolder();
-    initWebServer();
 
-    // 会话状态持久化路径（与访客台账同目录）
+    // 会话状态持久化路径（与访客台账同目录）—— 必须先于 initPersonFolder 设置，
+    // 否则 ensureArchiveSessionDir 读不到上次归档目录，导致每次启动都新建空 session 目录。
     {
         QString dir = m_config.visitorLogPath;
         if (!QDir(dir).isAbsolute())
             dir = QCoreApplication::applicationDirPath() + "/" + dir;
         m_sessionStatePath = QDir(dir).filePath(QStringLiteral("session_state.json"));
     }
+    initPersonFolder();
+    initWebServer();
+
     // 恢复上次会话的人员进出记录与上车目录登记（计数已在 initTripStore 中恢复）
     loadSessionState();
 
     // 创建通道监控器（上车/下车检测）
     m_zoneMonitor = new ZoneMonitor(this);
     m_zoneMonitor->setReidMatchThreshold(m_config.reidMatchThreshold);
+    m_zoneMonitor->setVisitorFreeMaxAgeMs(m_config.visitorFreeMaxAgeMs);
     m_zoneMonitor->setConfirmFrames(3);
     // 同步恢复的累计计数（标签显示优先使用 ZoneMonitor 的计数）
     m_zoneMonitor->setCounters(m_boardingCount, m_alightingCount);
@@ -313,8 +327,8 @@ MainWindow::MainWindow(QWidget *parent)
                      .arg(evt.suppressed ? evt.suppressReason : QStringLiteral("无")));
 
         int pid = evt.visitorId > 0 ? evt.visitorId : m_trackToVisitor.value(evt.trackId, -1);
-        const QDateTime boardTime = evt.exitTime.isValid() ? evt.exitTime
-                                                           : QDateTime::currentDateTime();
+        const QDateTime boardTime = calibratedTime(evt.exitTime.isValid() ? evt.exitTime
+                                                           : QDateTime::currentDateTime());
 
         if (kLegacyPipelineEnabled) {
             // 上车整段序列特征（进入检测区域 → 离开检测区域），下车时用于整段序列比对
@@ -420,8 +434,8 @@ MainWindow::MainWindow(QWidget *parent)
 
         const int fallbackId = evt.visitorId > 0 ? evt.visitorId
                                                  : m_trackToVisitor.value(evt.trackId, -1);
-        const QDateTime alightTime = evt.exitTime.isValid() ? evt.exitTime
-                                                            : QDateTime::currentDateTime();
+        const QDateTime alightTime = calibratedTime(evt.exitTime.isValid() ? evt.exitTime
+                                                            : QDateTime::currentDateTime());
 
         // ===== 数据存储：记录本站在该行程的「下车人数」并更新车厢内人数 =====
         if (m_tripStore && m_tripStore->isOpen()) {
@@ -436,7 +450,15 @@ MainWindow::MainWindow(QWidget *parent)
         // ===== 按乘客分目录：写入方向判定 + 入队后台整目录全图比对 =====
         if (m_personFolder) {
             int alightPersonId = m_personFolder->personIdForTrack(evt.trackId);
-            if (alightPersonId <= 0) alightPersonId = m_personFolder->ensurePerson(evt.trackId, evt.visitorId);
+            if (alightPersonId <= 0) {
+                alightPersonId = m_personFolder->ensurePerson(evt.trackId, evt.visitorId);
+            } else if (m_personFolder->isBoarding(alightPersonId)) {
+                // 该 track 此前已判为「上车」，本次又判「下车」说明是同一 track 被
+                // tracker 串到另一位乘客（person_311 类：一个 track 先后经过 2~3 位乘客）。
+                // 此时必须换新 person 编号归档，否则会把「上车」「下车」两次方向覆盖写进
+                // 同一个 person 目录，导致 3 个乘客的图片混在同一个文件夹。
+                alightPersonId = m_personFolder->rotatePerson(evt.trackId, evt.visitorId);
+            }
             m_personFolder->setDirection(alightPersonId, false, alightTime);
             // 下车结束 → 清除该乘客 ReID 身份（下次出现新建全新 id），避免隔久复用旧 person
             if (evt.visitorId > 0) m_zoneMonitor->forgetVisitor(evt.visitorId);
@@ -550,6 +572,76 @@ MainWindow::MainWindow(QWidget *parent)
                      .arg(pid).arg(m_alightingCount)
                      .arg(alightTime.toString("yyyy-MM-dd HH:mm:ss")));
         }
+    });
+
+    // ===== 第三状态：上车折返（上车穿越后未离开视野即反向穿越下车）=====
+    connect(m_zoneMonitor, &ZoneMonitor::boardingInvalidEvent, this, [this](const ZoneEvent &evt) {
+        if (m_boardingCount > 0) m_boardingCount--;
+
+        const int pid = evt.visitorId > 0 ? evt.visitorId
+                                          : m_trackToVisitor.value(evt.trackId, -1);
+        const QDateTime t = evt.exitTime.isValid() ? evt.exitTime : QDateTime::currentDateTime();
+
+        // 回滚按乘客分目录的方向判定：改写为「上车折返」，避免进入上/下车配对
+        int personId = -1;
+        if (m_personFolder) {
+            personId = m_personFolder->personIdForTrack(evt.trackId);
+            if (personId > 0) m_personFolder->setInvalid(personId, true, t);
+        }
+        if (personId > 0) {
+            for (int i = m_boardFolders.size() - 1; i >= 0; --i) {
+                if (m_boardFolders[i].personId == personId) m_boardFolders.removeAt(i);
+            }
+            for (int i = m_personEventRows.size() - 1; i >= 0; --i) {
+                if (m_personEventRows[i].personId == personId
+                    && m_personEventRows[i].status == QStringLiteral("上车"))
+                    m_personEventRows.removeAt(i);
+            }
+        }
+
+        // 回滚上车台账（若已登记在册则移除）
+        if (m_passengerBook && pid > 0 && m_passengerBook->isOnboard(pid)) {
+            m_passengerBook->removePassenger(pid);
+        }
+
+        LOG_WARN(QString("[MainWindow] ★ 上车折返(第三状态): V%1 track=%2 region=%3 乘客P%4 "
+                         "上车穿越后未离开视野即反向穿越下车，不计入上车总数，count=%5")
+                     .arg(evt.visitorId).arg(evt.trackId).arg(evt.regionId)
+                     .arg(pid).arg(m_boardingCount));
+
+        updateVisitorTable();
+        saveSessionState();
+    });
+
+    // ===== 第四状态：下车折返（下车穿越后未离开视野即反向穿越上车）=====
+    connect(m_zoneMonitor, &ZoneMonitor::alightingInvalidEvent, this, [this](const ZoneEvent &evt) {
+        if (m_alightingCount > 0) m_alightingCount--;
+
+        const int pid = evt.visitorId > 0 ? evt.visitorId
+                                          : m_trackToVisitor.value(evt.trackId, -1);
+        const QDateTime t = evt.exitTime.isValid() ? evt.exitTime : QDateTime::currentDateTime();
+
+        // 回滚按乘客分目录的方向判定：改写为「下车折返」，避免进入上/下车配对
+        int personId = -1;
+        if (m_personFolder) {
+            personId = m_personFolder->personIdForTrack(evt.trackId);
+            if (personId > 0) m_personFolder->setInvalid(personId, false, t);
+        }
+        if (personId > 0) {
+            for (int i = m_personEventRows.size() - 1; i >= 0; --i) {
+                if (m_personEventRows[i].personId == personId
+                    && m_personEventRows[i].status == QStringLiteral("下车"))
+                    m_personEventRows.removeAt(i);
+            }
+        }
+
+        LOG_WARN(QString("[MainWindow] ★ 下车折返(第四状态): V%1 track=%2 region=%3 乘客P%4 "
+                         "下车穿越后未离开视野即反向穿越上车，不计入下车总数，count=%5")
+                     .arg(evt.visitorId).arg(evt.trackId).arg(evt.regionId)
+                     .arg(pid).arg(m_alightingCount));
+
+        updateVisitorTable();
+        saveSessionState();
     });
 
     m_elapsedTimer.start();
@@ -785,6 +877,10 @@ MainWindow::~MainWindow()
         m_visitorLog->logSessionEnd();
     }
 
+    // 保存会话状态（--autoplay 自动退出走析构、不走 closeEvent，须在此落盘，
+    // 保证归档目录 + 人员进出记录 + 人工确认在无人干预退出后也能恢复）
+    saveSessionState();
+
     // ===== 乘车数据存储：结束行程并关闭数据库 =====
     if (m_tripStore) {
         m_tripStore->endTrip(m_currentTripId, QDateTime::currentDateTime());
@@ -877,6 +973,12 @@ void MainWindow::onToggleCapture()
 
 void MainWindow::startDetectionPipeline()
 {
+    // 深度 ReID 后端：停止采集(onCloseCamera)时被释放，重新启动采集需重新加载并绑定
+    // （否则 FolderMatchWorker 的 m_deep 会变成野指针，下车比对报“后端不可用”跳过匹配）
+    if (m_config.reidUseDeepReid && !m_deepReid) {
+        initDeepReid();
+    }
+
     // 创建采集线程
     m_grabThread = new GrabThread(&m_camera, "HX-CCD23", this);
 
@@ -884,6 +986,9 @@ void MainWindow::startDetectionPipeline()
     m_detector = new PersonDetector();
     m_tracker = new PersonTracker(m_config.trackerIouThreshold, m_config.trackerMaxMissed);
     m_tracker->setKalmanEnabled(m_config.trackerKalmanEnabled);
+    // 重建 PersonTracker 后 track ID 从 1 重新开始，须清空 PersonFolder 的 track 映射，
+    // 否则新 track 会误复用旧 person 编号（表现为 person_N 重新从 1 开始）。
+    if (m_personFolder) m_personFolder->clearTrackMappings();
     m_tracker->setReidMatchingEnabled(m_config.trackerReidEnabled);
     m_tracker->setReidMatchThreshold(m_config.trackerReidThreshold);
     m_tracker->setGalleryMaxAge(m_config.trackerGalleryMaxAgeMs);
@@ -1082,54 +1187,40 @@ void MainWindow::autoPlayVideo(const QString &path, double speed)
 
 void MainWindow::switchPersonFolderToVideo(const QString &videoPath)
 {
-    QString base = m_config.savePath;
-    if (!QDir(base).isAbsolute())
-        base = QCoreApplication::applicationDirPath() + "/" + base;
+    Q_UNUSED(videoPath);
 
-    const QFileInfo fi(videoPath);
-    const QString videoDir = QDir(base).filePath(
-        QStringLiteral("%1_%2")
-            .arg(fi.completeBaseName())
-            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))));
-
-    // 继承旧 PersonFolder 的下一个 person 序号，避免新视频检测的 person_N
-    // 与保留在人员记录表中的历史 person_N 冲突。
-    const int nextPersonId = m_personFolder ? m_personFolder->nextPersonId() : 1;
-    if (m_personFolder) {
-        delete m_personFolder;
-        m_personFolder = nullptr;
+    // 需求变更：一天多个视频，只要未「清除计数」，所有视频的 person_N 都累积在
+    // 同一个归档会话目录，便于跨视频比对同一乘客。打开新视频不再新建目录。
+    ensureArchiveSessionDir();
+    if (!m_personFolder || m_personFolder->basePath() != m_archiveSessionDir) {
+        const int nextPersonId = m_personFolder ? m_personFolder->nextPersonId() : 1;
+        if (m_personFolder) {
+            m_personFolder->reset();   // 关闭旧视频写入器
+            delete m_personFolder;
+            m_personFolder = nullptr;
+        }
+        m_personFolder = new PersonFolder(m_archiveSessionDir);
+        m_personFolder->setSaveEveryN(m_config.personSaveEveryN);
+        m_personFolder->setNextPersonId(nextPersonId);
     }
-    m_personFolder = new PersonFolder(videoDir);
-    m_personFolder->setSaveEveryN(m_config.personSaveEveryN);
-    m_personFolder->setNextPersonId(nextPersonId);
 
     // 选择视频不再清除已有人员记录：历史事件行与上车目录登记保留，
     // 视频检测的新记录继续累加；仅刷新表格以保持显示同步。
     updateVisitorTable();
 
-    LOG_INFO(QString("[MainWindow] 视频模式人员归档目录: %1 (nextPersonId=%2)")
-                 .arg(videoDir).arg(nextPersonId));
+    LOG_INFO(QString("[MainWindow] 视频模式人员归档目录（跨视频复用）: %1 (nextPersonId=%2)")
+                 .arg(m_archiveSessionDir)
+                 .arg(m_personFolder ? m_personFolder->nextPersonId() : 1));
 }
 
 void MainWindow::restorePersonFolderFromVideo()
 {
     if (!m_videoMode) return;
 
-    QString base = m_config.savePath;
-    if (!QDir(base).isAbsolute())
-        base = QCoreApplication::applicationDirPath() + "/" + base;
-
-    if (m_personFolder) {
-        delete m_personFolder;
-        m_personFolder = nullptr;
-    }
-    m_personFolder = new PersonFolder(base);
-    m_personFolder->setSaveEveryN(m_config.personSaveEveryN);
-
-    // 恢复实时会话的人员记录与上车目录登记
-    loadSessionState();
-
-    LOG_INFO("[MainWindow] 视频检测结束，已恢复实时人员归档目录");
+    // 需求变更：实时与视频统一归档目录，视频结束不再切回实时目录。
+    // person_N 继续累积在当前会话目录（m_archiveSessionDir），便于跨视频比对同一乘客。
+    LOG_INFO("[MainWindow] 视频检测结束（归档目录保持不变: "
+             + (m_archiveSessionDir.isEmpty() ? QStringLiteral("未初始化") : m_archiveSessionDir) + ")");
 }
 
 void MainWindow::onTogglePlay()
@@ -1175,7 +1266,7 @@ void MainWindow::updateCaptureStatus()
 {
     if (!m_isCapturing) {
         ui->captureStatusLabel->setText("状态: 已停止");
-        ui->captureStatusLabel->setStyleSheet("color: #b0bec5; font-family: 'Consolas'; font-size: 12px; font-weight: bold; padding: 0 8px;");
+        ui->captureStatusLabel->setStyleSheet("color: #d6e0ea; font-family: 'Consolas'; font-size: 13px; font-weight: bold; padding: 0 8px;");
     } else if (m_regionManager && !m_regionManager->regions().isEmpty()) {
         ui->captureStatusLabel->setText("状态: 已启动 - 区域监控中");
         ui->captureStatusLabel->setStyleSheet("color: #00e676; font-family: 'Consolas'; font-size: 12px; font-weight: bold; padding: 0 8px;");
@@ -1203,6 +1294,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (m_visitorLog) {
         m_visitorLog->logSessionEnd();
     }
+
+    // 保存会话状态（归档目录 + 人员进出记录 + 上车目录登记 + 人工确认），
+    // 确保重启后复用上次归档目录并恢复程序最后关闭时的数据。
+    saveSessionState();
 
     if (m_isCapturing) {
         onCloseCamera();
@@ -1483,12 +1578,19 @@ int MainWindow::matchOrCreateVisitor(const TrackedPerson &person, const cv::Mat 
         vr.currentTrackId = person.trackId;
         vr.enterTime = QDateTime::currentDateTime();
         vr.exitTime = QDateTime();
-        if (!rawFrame.empty()) {
-            vr.enterImage = rawFrame.clone();
-        }
-        // 更新 ReID 特征（取最新特征）
+        // （内存治理）不再保存进入整帧快照：抓拍图由 person_N 目录统一管理，
+        // VisitorRecord 已移除 enterImage/exitImage 字段，避免访客记录累积整帧图像。
+        // 更新 ReID 特征：EMA 融合（以旧特征为主），避免误匹配后特征漂移（A→B→C）
         if (!reidFeature.empty()) {
-            vr.reidFeature = reidFeature.clone();
+            const cv::Mat oldFeat = vr.reidFeature;
+            if (!oldFeat.empty() && oldFeat.size() == reidFeature.size()) {
+                QVector<cv::Mat> seq;
+                seq.append(oldFeat);
+                seq.append(reidFeature);
+                vr.reidFeature = ReIDExtractor::temporalFuse(seq, 0.3f);
+            } else {
+                vr.reidFeature = reidFeature.clone();
+            }
         }
 
         m_trackToVisitor[person.trackId] = matchedVisitorId;
@@ -1521,9 +1623,7 @@ int MainWindow::matchOrCreateVisitor(const TrackedPerson &person, const cv::Mat 
     vr.isInside = true;
     vr.currentTrackId = person.trackId;
     vr.regionId = regionId;
-    if (!rawFrame.empty()) {
-        vr.enterImage = rawFrame.clone();
-    }
+    // （内存治理）不再保存进入整帧快照，见 matchOrCreateVisitor 重入分支说明
 
     m_visitors[newVisitorId] = vr;
     m_trackToVisitor[person.trackId] = newVisitorId;
@@ -1548,14 +1648,12 @@ int MainWindow::matchOrCreateVisitor(const TrackedPerson &person, const cv::Mat 
 
 void MainWindow::updateVisitorExit(int visitorId, const cv::Mat &exitImage)
 {
+    Q_UNUSED(exitImage);   // （内存治理）不再保存离开整帧快照
     if (!m_visitors.contains(visitorId)) return;
 
     VisitorRecord &vr = m_visitors[visitorId];
     vr.isInside = false;
     vr.exitTime = QDateTime::currentDateTime();
-    if (!exitImage.empty()) {
-        vr.exitImage = exitImage.clone();
-    }
     vr.currentTrackId = -1;
 
     // 更新 ReID 特征（离开时保留最新特征用于后续匹配）
@@ -1679,6 +1777,444 @@ void MainWindow::updateVisitorTable()
     ui->tableVisitors->blockSignals(false);
 }
 
+// ===== 匹配细节对话框（每 3 秒刷新上/下车匹配对，供人工核查）=====
+void MainWindow::initMatchDetailDialog()
+{
+    if (m_matchDetailDialog) return;
+
+    m_matchDetailDialog = new QDialog(this);
+    m_matchDetailDialog->setWindowTitle(QStringLiteral("匹配细节"));
+    m_matchDetailDialog->resize(900, 640);
+
+    QVBoxLayout *layout = new QVBoxLayout(m_matchDetailDialog);
+    layout->setContentsMargins(8, 8, 8, 8);
+
+    m_matchDetailTable = new QTableWidget(m_matchDetailDialog);
+    m_matchDetailTable->setColumnCount(5);
+    m_matchDetailTable->setHorizontalHeaderLabels({QStringLiteral("上车乘客"),
+                                                   QStringLiteral("下车乘客"),
+                                                   QStringLiteral("相似度"),
+                                                   QStringLiteral("上车时间"),
+                                                   QStringLiteral("人工确认")});
+    m_matchDetailTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_matchDetailTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_matchDetailTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_matchDetailTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_matchDetailTable->horizontalHeader()->setStretchLastSection(true);
+    m_matchDetailTable->verticalHeader()->setDefaultSectionSize(64);
+    layout->addWidget(m_matchDetailTable, 1);
+
+    // 点击行 → 加载该匹配对的上/下车「全部图片」缩略图
+    connect(m_matchDetailTable, &QTableWidget::cellClicked, this,
+            [this](int row, int) { onMatchDetailRowChanged(row); });
+
+    // ===== 上车图片：占一行，横向滚动展示该 person 全部裁剪图 =====
+    QLabel *boardTitle = new QLabel(QStringLiteral("◆ 上车乘客图片（点击表格行加载全部）"), m_matchDetailDialog);
+    boardTitle->setStyleSheet(QStringLiteral("color:#69f0ae; font-size:12px; font-weight:bold;"));
+    layout->addWidget(boardTitle);
+
+    m_matchBoardScroll = new QScrollArea(m_matchDetailDialog);
+    m_matchBoardScroll->setWidgetResizable(true);
+    m_matchBoardScroll->setFixedHeight(150);
+    m_matchBoardScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_matchBoardScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_matchBoardStrip = new QWidget();
+    m_matchBoardStrip->setLayout(new QHBoxLayout(m_matchBoardStrip));
+    m_matchBoardStrip->layout()->setContentsMargins(4, 4, 4, 4);
+    m_matchBoardStrip->layout()->setSpacing(6);
+    static_cast<QHBoxLayout *>(m_matchBoardStrip->layout())->setAlignment(Qt::AlignLeft);
+    m_matchBoardScroll->setWidget(m_matchBoardStrip);
+    layout->addWidget(m_matchBoardScroll);
+
+    // ===== 下车图片：占一行，横向滚动展示该 person 全部裁剪图 =====
+    QLabel *alightTitle = new QLabel(QStringLiteral("◆ 下车乘客图片（点击表格行加载全部）"), m_matchDetailDialog);
+    alightTitle->setStyleSheet(QStringLiteral("color:#ffab40; font-size:12px; font-weight:bold;"));
+    layout->addWidget(alightTitle);
+
+    m_matchAlightScroll = new QScrollArea(m_matchDetailDialog);
+    m_matchAlightScroll->setWidgetResizable(true);
+    m_matchAlightScroll->setFixedHeight(150);
+    m_matchAlightScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_matchAlightScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_matchAlightStrip = new QWidget();
+    m_matchAlightStrip->setLayout(new QHBoxLayout(m_matchAlightStrip));
+    m_matchAlightStrip->layout()->setContentsMargins(4, 4, 4, 4);
+    m_matchAlightStrip->layout()->setSpacing(6);
+    static_cast<QHBoxLayout *>(m_matchAlightStrip->layout())->setAlignment(Qt::AlignLeft);
+    m_matchAlightScroll->setWidget(m_matchAlightStrip);
+    layout->addWidget(m_matchAlightScroll);
+
+    // 导出按钮
+    m_exportTrainBtn = new QPushButton(QStringLiteral("导出「人工确认正确」的匹配对（OSNet 训练数据）"), m_matchDetailDialog);
+    m_exportTrainBtn->setMinimumHeight(40);
+    connect(m_exportTrainBtn, &QPushButton::clicked, this, &MainWindow::onExportTrainData);
+    layout->addWidget(m_exportTrainBtn);
+
+    // 每 3 秒刷新（仅刷新表格内容，不影响主界面匹配检测线程）
+    m_matchDetailTimer = new QTimer(this);
+    connect(m_matchDetailTimer, &QTimer::timeout, this, &MainWindow::refreshMatchDetail);
+    m_matchDetailTimer->start(3000);
+}
+
+void MainWindow::onToggleMatchDetail()
+{
+    if (m_matchDetailDialog && m_matchDetailDialog->isVisible()) {
+        m_matchDetailDialog->hide();
+        return;
+    }
+    if (!m_matchDetailDialog) initMatchDetailDialog();
+    refreshMatchDetail();
+    m_matchDetailDialog->show();
+    m_matchDetailDialog->raise();
+    m_matchDetailDialog->activateWindow();
+}
+
+void MainWindow::refreshMatchDetail()
+{
+    if (!m_matchDetailTable) return;
+
+    // 从人员进出记录中收集「已匹配」的上下车对（上车行作为配对代表）
+    struct Pair {
+        int boardId;
+        int alightId;
+        float similarity;
+        QDateTime time;
+        int confirm;   // 0=未确认, 1=正确, 2=错误
+    };
+    QVector<Pair> pairs;
+    for (const PersonEventRow &r : m_personEventRows) {
+        if (r.status == QStringLiteral("上车") && r.matchedPersonId > 0) {
+            Pair p;
+            p.boardId = r.personId;
+            p.alightId = r.matchedPersonId;
+            p.similarity = r.similarity;
+            p.time = r.time;
+            p.confirm = r.manualConfirm;
+            pairs.append(p);
+        }
+    }
+
+    m_matchDetailTable->setRowCount(pairs.size());
+    for (int i = 0; i < pairs.size(); ++i) {
+        const QString boardName = m_personFolder
+                ? m_personFolder->personName(pairs[i].boardId)
+                : QStringLiteral("person_%1").arg(pairs[i].boardId);
+        const QString alightName = m_personFolder
+                ? m_personFolder->personName(pairs[i].alightId)
+                : QStringLiteral("person_%1").arg(pairs[i].alightId);
+
+        QTableWidgetItem *boardItem = m_matchDetailTable->item(i, 0);
+        if (!boardItem) { boardItem = new QTableWidgetItem(); m_matchDetailTable->setItem(i, 0, boardItem); }
+        boardItem->setText(boardName);
+        boardItem->setData(Qt::UserRole, pairs[i].boardId);
+        boardItem->setForeground(QBrush(QColor(0, 230, 118)));
+
+        QTableWidgetItem *alightItem = m_matchDetailTable->item(i, 1);
+        if (!alightItem) { alightItem = new QTableWidgetItem(); m_matchDetailTable->setItem(i, 1, alightItem); }
+        alightItem->setText(alightName);
+        alightItem->setData(Qt::UserRole, pairs[i].alightId);
+        alightItem->setForeground(QBrush(QColor(255, 171, 64)));
+
+        QTableWidgetItem *simItem = m_matchDetailTable->item(i, 2);
+        if (!simItem) { simItem = new QTableWidgetItem(); m_matchDetailTable->setItem(i, 2, simItem); }
+        simItem->setText(QString::number(pairs[i].similarity * 100.0f, 'f', 1));
+        simItem->setForeground(QBrush(QColor(255, 213, 79)));
+
+        QTableWidgetItem *timeItem = m_matchDetailTable->item(i, 3);
+        if (!timeItem) { timeItem = new QTableWidgetItem(); m_matchDetailTable->setItem(i, 3, timeItem); }
+        timeItem->setText(pairs[i].time.isValid() ? pairs[i].time.toString(QStringLiteral("MM-dd HH:mm:ss"))
+                                                  : QStringLiteral("--"));
+        timeItem->setForeground(QBrush(QColor(160, 212, 255)));
+
+        // 第 5 列：人工确认（三个单选按钮：未确认 / 正确 / 错误）
+        QWidget *confirmWidget = m_matchDetailTable->cellWidget(i, 4);
+        if (!confirmWidget) {
+            confirmWidget = new QWidget();
+            QHBoxLayout *confirmLayout = new QHBoxLayout(confirmWidget);
+            confirmLayout->setContentsMargins(2, 2, 2, 2);
+            confirmLayout->setSpacing(4);
+
+            QRadioButton *rb0 = new QRadioButton(QStringLiteral("未确认"), confirmWidget);
+            QRadioButton *rb1 = new QRadioButton(QStringLiteral("正确"), confirmWidget);
+            QRadioButton *rb2 = new QRadioButton(QStringLiteral("错误"), confirmWidget);
+            rb0->setStyleSheet(QStringLiteral("color:#b8d4f0;"));
+            rb1->setStyleSheet(QStringLiteral("color:#69f0ae;"));
+            rb2->setStyleSheet(QStringLiteral("color:#ff8a80;"));
+
+            QButtonGroup *group = new QButtonGroup(confirmWidget);
+            group->addButton(rb0, 0);
+            group->addButton(rb1, 1);
+            group->addButton(rb2, 2);
+            connect(group, QOverload<int>::of(&QButtonGroup::idClicked), this,
+                    [this, confirmWidget](int id) {
+                        const int row = confirmWidget->property("row").toInt();
+                        onManualConfirmChanged(row, id);
+                    });
+
+            confirmLayout->addWidget(rb0);
+            confirmLayout->addWidget(rb1);
+            confirmLayout->addWidget(rb2);
+            m_matchDetailTable->setCellWidget(i, 4, confirmWidget);
+        }
+        // 回填选中状态（程序化 setChecked 不触发 idClicked，无需 blockSignals）
+        confirmWidget->setProperty("row", i);
+        if (QButtonGroup *group = confirmWidget->findChild<QButtonGroup *>()) {
+            if (QAbstractButton *b = group->button(pairs[i].confirm)) {
+                b->setChecked(true);
+            }
+        }
+    }
+
+    // 标题提示当前匹配对数量
+    m_matchDetailDialog->setWindowTitle(QStringLiteral("匹配细节（%1 对）").arg(pairs.size()));
+}
+
+void MainWindow::onMatchDetailRowChanged(int row)
+{
+    if (row < 0 || !m_matchDetailTable) return;
+
+    // 从第 0/1 列的 UserRole 读取 personId
+    const QTableWidgetItem *bItem = m_matchDetailTable->item(row, 0);
+    const QTableWidgetItem *aItem = m_matchDetailTable->item(row, 1);
+    const int boardId = bItem ? bItem->data(Qt::UserRole).toInt() : -1;
+    const int alightId = aItem ? aItem->data(Qt::UserRole).toInt() : -1;
+
+    auto loadStrip = [this](int personId, QWidget *strip) {
+        if (!strip) return;
+        QHBoxLayout *lay = static_cast<QHBoxLayout *>(strip->layout());
+        // 清空旧缩略图
+        while (QLayoutItem *item = lay->takeAt(0)) {
+            if (QWidget *w = item->widget()) w->deleteLater();
+            delete item;
+        }
+        if (!m_personFolder || personId <= 0) {
+            QLabel *hint = new QLabel(QStringLiteral("无图片"), strip);
+            hint->setStyleSheet(QStringLiteral("color:#777;"));
+            lay->addWidget(hint);
+            return;
+        }
+        const QString dir = m_personFolder->cropImagesDir(personId);
+        QDir d(dir);
+        QStringList imgs = d.entryList({QStringLiteral("*.jpg"), QStringLiteral("*.jpeg"),
+                                        QStringLiteral("*.png"), QStringLiteral("*.bmp")},
+                                       QDir::Files, QDir::Name);
+        if (imgs.isEmpty()) {
+            QLabel *hint = new QLabel(QStringLiteral("无图片"), strip);
+            hint->setStyleSheet(QStringLiteral("color:#777;"));
+            lay->addWidget(hint);
+            return;
+        }
+        // 最多展示 60 张缩略图，避免一次性加载过多卡顿
+        if (imgs.size() > 60) imgs = imgs.mid(0, 60);
+        for (const QString &fn : imgs) {
+            QPixmap pm(d.filePath(fn));
+            if (pm.isNull()) continue;
+            QLabel *lbl = new QLabel(strip);
+            lbl->setFixedSize(100, 130);
+            lbl->setAlignment(Qt::AlignCenter);
+            lbl->setStyleSheet(QStringLiteral("border:1px solid #333; background:#000;"));
+            lbl->setPixmap(pm.scaled(lbl->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            lbl->setToolTip(fn);
+            lay->addWidget(lbl);
+        }
+        lay->addStretch();
+    };
+
+    loadStrip(boardId, m_matchBoardStrip);
+    loadStrip(alightId, m_matchAlightStrip);
+}
+
+void MainWindow::onManualConfirmChanged(int row, int index)
+{
+    if (row < 0 || !m_matchDetailTable) return;
+    const QTableWidgetItem *bItem = m_matchDetailTable->item(row, 0);
+    const QTableWidgetItem *aItem = m_matchDetailTable->item(row, 1);
+    const int boardId = bItem ? bItem->data(Qt::UserRole).toInt() : -1;
+    const int alightId = aItem ? aItem->data(Qt::UserRole).toInt() : -1;
+
+    // 写回 PersonEventRow（上/下车两行都更新，保证重启后恢复）
+    for (PersonEventRow &r : m_personEventRows) {
+        if (r.personId == boardId || r.personId == alightId) {
+            r.manualConfirm = index;
+        }
+    }
+    saveSessionState();
+
+    LOG_INFO(QString("[MainWindow] 人工确认匹配: person_%1 ↔ person_%2 → %3")
+                 .arg(boardId).arg(alightId)
+                 .arg(index == 1 ? QStringLiteral("正确")
+                                 : index == 2 ? QStringLiteral("错误") : QStringLiteral("未确认")));
+}
+
+void MainWindow::onExportTrainData()
+{
+    // 收集人工确认「正确」的匹配对（以上车行为代表去重）
+    struct TrainPair { int boardId; int alightId; };
+    QVector<TrainPair> confirmed;
+    for (const PersonEventRow &r : m_personEventRows) {
+        if (r.status == QStringLiteral("上车") && r.matchedPersonId > 0 && r.manualConfirm == 1) {
+            bool dup = false;
+            for (const TrainPair &tp : confirmed) {
+                if (tp.boardId == r.personId) { dup = true; break; }
+            }
+            if (!dup) confirmed.append({r.personId, r.matchedPersonId});
+        }
+    }
+
+    if (confirmed.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("导出训练数据"),
+                                 QStringLiteral("暂无「人工确认正确」的匹配对。\n\n"
+                                                "请在匹配细节表格的「人工确认」列，把正确的匹配标记为「正确」后再导出。"));
+        return;
+    }
+
+    if (!m_personFolder) return;
+    const QString outDir = QFileDialog::getExistingDirectory(
+            this, QStringLiteral("选择 OSNet 训练数据导出目录"),
+            QStringLiteral("/media/tianheng/test/16.reId/passenger_reid_dataset"));
+    if (outDir.isEmpty()) return;
+
+    int identId = 0;
+    int totalCopied = 0;
+    for (const TrainPair &tp : confirmed) {
+        const QString srcBoard = m_personFolder->cropImagesDir(tp.boardId);
+        const QString srcAlight = m_personFolder->cropImagesDir(tp.alightId);
+        QString identDir = QDir(outDir).filePath(QStringLiteral("train_%1").arg(++identId, 4, 10, QChar('0')));
+        QDir().mkpath(identDir);
+        int copied = 0;
+        for (const QString &src : {srcBoard, srcAlight}) {
+            QDir d(src);
+            const QStringList imgs = d.entryList({QStringLiteral("*.jpg"), QStringLiteral("*.jpeg"),
+                                                  QStringLiteral("*.png"), QStringLiteral("*.bmp")},
+                                                 QDir::Files, QDir::Name);
+            for (const QString &fn : imgs) {
+                if (copied >= 80) break;   // 每个身份最多 80 张，控制规模
+                QFile::copy(d.filePath(fn), QDir(identDir).filePath(
+                        QStringLiteral("%1_%2").arg(copied++).arg(fn)));
+            }
+        }
+        totalCopied += copied;
+    }
+
+    QMessageBox::information(this, QStringLiteral("导出完成"),
+                             QStringLiteral("已导出 %1 对匹配（%2 个身份目录 / %3 张图）到：\n%4")
+                                     .arg(confirmed.size()).arg(identId).arg(totalCopied).arg(outDir));
+    LOG_INFO(QString("[MainWindow] 导出 OSNet 训练数据: %1 对 → %2").arg(confirmed.size()).arg(outDir));
+}
+
+// ===== 视频时间校准（七段数码管 OCR 识别右下角时间戳，加载视频时校准一次）=====
+namespace {
+// 生成 0-9 数字模板（标准字体，白字黑底）
+QVector<cv::Mat> buildDigitTemplates(int w, int h)
+{
+    QVector<cv::Mat> templates;
+    for (int d = 0; d <= 9; ++d) {
+        cv::Mat t = cv::Mat::zeros(h, w, CV_8UC1);
+        const char digit[2] = {static_cast<char>('0' + d), '\0'};
+        cv::putText(t, digit, cv::Point(2, h - 5),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(255), 2, cv::LINE_AA);
+        templates.append(t);
+    }
+    return templates;
+}
+
+// 模板匹配识别单个字符（白字黑底），返回 '0'-'9' 或 '?'
+char matchDigitTemplate(const cv::Mat &ch, const QVector<cv::Mat> &templates)
+{
+    if (ch.empty()) return '?';
+    int best = -1;
+    double bestScore = 0.0;
+    for (int d = 0; d <= 9; ++d) {
+        cv::Mat t;
+        cv::resize(templates[d], t, ch.size(), 0, 0, cv::INTER_AREA);
+        cv::Mat result;
+        cv::matchTemplate(ch, t, result, cv::TM_CCOEFF_NORMED);
+        const double score = result.at<float>(0, 0);
+        if (score > bestScore) { bestScore = score; best = d; }
+    }
+    return (bestScore > 0.35) ? static_cast<char>('0' + best) : '?';
+}
+} // namespace
+
+QDateTime MainWindow::calibratedTime(const QDateTime &t) const
+{
+    return (m_videoTimeCalibrated && t.isValid()) ? t.addMSecs(m_videoTimeOffsetMs) : t;
+}
+
+bool MainWindow::ocrVideoTimestamp(const cv::Mat &roi, QDateTime &out) const
+{
+    if (roi.empty()) return false;
+
+    cv::Mat gray, bin;
+    cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY);
+    cv::threshold(gray, bin, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+    // 保证数字为白(255)、背景为黑(0)：OSD 通常亮字暗底，若前景偏黑则反转
+    if (cv::mean(bin)[0] < 127) cv::bitwise_not(bin, bin);
+
+    // 连通域分割字符，按 x 坐标排序
+    cv::Mat labels, stats, centroids;
+    const int n = cv::connectedComponentsWithStats(bin, labels, stats, centroids, 8);
+    struct CBox { int x, y, w, h; };
+    QVector<CBox> chars;
+    for (int i = 1; i < n; ++i) {
+        const int cw = stats.at<int>(i, cv::CC_STAT_WIDTH);
+        const int chh = stats.at<int>(i, cv::CC_STAT_HEIGHT);
+        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
+        if (cw < 3 || chh < 8 || area < 12) continue;  // 过滤噪声
+        CBox cb;
+        cb.x = stats.at<int>(i, cv::CC_STAT_LEFT);
+        cb.y = stats.at<int>(i, cv::CC_STAT_TOP);
+        cb.w = cw;
+        cb.h = chh;
+        chars.append(cb);
+    }
+    if (chars.isEmpty()) return false;
+    std::sort(chars.begin(), chars.end(), [](const CBox &a, const CBox &b) { return a.x < b.x; });
+
+    const QVector<cv::Mat> templates = buildDigitTemplates(20, 40);
+    QString digits;
+    for (const CBox &cb : chars) {
+        cv::Mat ch = bin(cv::Rect(cb.x, cb.y, cb.w, cb.h));
+        cv::resize(ch, ch, cv::Size(20, 40), 0, 0, cv::INTER_AREA);
+        const char d = matchDigitTemplate(ch, templates);
+        if (d >= '0' && d <= '9') digits += d;
+    }
+
+    // 期望 14 位数字：yyyyMMddHHmmss
+    if (digits.size() != 14) return false;
+    out = QDateTime::fromString(digits, QStringLiteral("yyyyMMddHHmmss"));
+    return out.isValid();
+}
+
+void MainWindow::tryCalibrateVideoTime(const cv::Mat &frame)
+{
+    if (m_videoTimeCalibrated || frame.empty() || !m_videoMode) return;
+    // 仅在前 30 帧（约 1 秒）内尝试 OCR，避免持续识别开销
+    if (m_videoTimeCalibAttempts >= 30) return;
+    m_videoTimeCalibAttempts++;
+
+    // 时间戳位于图像右下角：取右下角约 30% 宽 × 7% 高区域
+    const int w = frame.cols, h = frame.rows;
+    const int roiW = qMax(200, static_cast<int>(w * 0.30));
+    const int roiH = qMax(24, static_cast<int>(h * 0.07));
+    const int x = w - roiW - 4;
+    const int y = h - roiH - 4;
+    if (x < 0 || y < 0) return;
+
+    const cv::Mat roi = frame(cv::Rect(x, y, roiW, roiH));
+    QDateTime videoTime;
+    if (ocrVideoTimestamp(roi, videoTime)) {
+        m_videoTimeOffsetMs = videoTime.toMSecsSinceEpoch() - QDateTime::currentMSecsSinceEpoch();
+        m_videoTimeCalibrated = true;
+        LOG_INFO(QString("[MainWindow] ★ 视频时间校准成功: 视频时间=%1, 偏移=%2ms")
+                     .arg(videoTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")))
+                     .arg(m_videoTimeOffsetMs));
+    } else {
+        // 识别失败仅提示一次，不阻塞检测流程（后续沿用系统时间）
+        LOG_WARN("[MainWindow] 视频时间戳 OCR 识别失败（右下角未识别到七段数码管时间），沿用系统时间");
+    }
+}
+
 void MainWindow::refreshRegionOverlays()
 {
     if (!m_imageView || !m_regionManager) return;
@@ -1781,6 +2317,9 @@ void MainWindow::onPersonsDetected(int imgW, int imgH, QVector<TrackedPerson> pe
         rawFrame = m_currentRawFrame.clone();
     }
 
+    // 视频模式：加载后首帧尝试 OCR 校准右下角时间戳（仅校准一次）
+    tryCalibrateVideoTime(rawFrame);
+
     // ===== 通道监控：上车/下车方向检测（每帧执行，不随显示跳帧）=====
     if (m_zoneMonitor && m_regionManager && imgW > 0 && imgH > 0) {
         m_zoneMonitor->processFrame(persons, rawFrame, m_regionManager, imgW, imgH);
@@ -1792,6 +2331,10 @@ void MainWindow::onPersonsDetected(int imgW, int imgH, QVector<TrackedPerson> pe
     // ===== 状态机：方向感知的穿越检测 + ReID 匹配 =====
     // 确认帧数阈值：需要连续 N 帧在区域内/外才触发进入/离开事件
     static constexpr int CROSS_CONFIRM_FRAMES = 3;
+
+    // 锁定 tracker：本线程的状态机 getTrack/同步回 tracker 与采集线程的
+    // update() 串行化，避免 cv::Mat data race（release 崩溃）
+    QMutexLocker trackerLocker(m_tracker ? m_tracker->mutex() : nullptr);
 
     int personInRegionCount = 0;
     for (int i = 0; i < persons.size(); ++i) {
@@ -1968,13 +2511,17 @@ void MainWindow::onPersonsDetected(int imgW, int imgH, QVector<TrackedPerson> pe
         ui->label_fps->setText(QString("FPS: %1").arg(m_currentFps, 0, 'f', 1));
     const int boardingCnt = m_zoneMonitor ? m_zoneMonitor->boardingCount() : m_boardingCount;
     const int alightingCnt = m_zoneMonitor ? m_zoneMonitor->alightingCount() : m_alightingCount;
+    // 区域人数/车厢内 由 label_personCount 显示；上车/下车 由独立的
+    // label_boardCount / label_alightCount 显示（避免与采集信息重复）。
     if (ui->label_personCount) {
-        ui->label_personCount->setText(QString("区域人数: %1 | 上车: %2 | 下车: %3 | 车厢内: %4")
+        ui->label_personCount->setText(QString("区域人数: %1 | 车厢内: %2")
                                            .arg(personInRegionCount)
-                                           .arg(boardingCnt)
-                                           .arg(alightingCnt)
                                            .arg(m_onboardCount));
     }
+    if (ui->label_boardCount)
+        ui->label_boardCount->setText(QString("上车: %1").arg(boardingCnt));
+    if (ui->label_alightCount)
+        ui->label_alightCount->setText(QString("下车: %1").arg(alightingCnt));
     m_currentPersonCount = personInRegionCount;
 }
 
@@ -2389,19 +2936,51 @@ void MainWindow::updateOnboardLabel()
 }
 
 // ===== 按乘客分目录的图像归档 =====
-void MainWindow::initPersonFolder()
+void MainWindow::ensureArchiveSessionDir(bool reuseLast)
 {
+    if (!m_archiveSessionDir.isEmpty() && QDir(m_archiveSessionDir).exists())
+        return;
+
+    // 重启后优先复用上次会话目录（未清除计数时），避免每次启动都新建空目录
+    if (reuseLast && !m_sessionStatePath.isEmpty()) {
+        QFile f(m_sessionStatePath);
+        if (f.exists() && f.open(QIODevice::ReadOnly)) {
+            const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+            f.close();
+            const QString savedDir = root.value(QStringLiteral("archiveSessionDir")).toString();
+            if (!savedDir.isEmpty() && QDir(savedDir).exists()) {
+                m_archiveSessionDir = savedDir;
+                LOG_INFO("[MainWindow] 复用上次归档会话目录: " + savedDir);
+                return;
+            }
+        }
+    }
+
     QString base = m_config.savePath;
     if (!QDir(base).isAbsolute())
         base = QCoreApplication::applicationDirPath() + "/" + base;
-    m_personFolder = new PersonFolder(base);
+
+    // 需求：一天分成多个视频，只要未「清除计数」，所有视频的 person_N 都累积到
+    // 同一目录，便于跨视频比对同一乘客；点「清除计数」才新建目录。
+    m_archiveSessionDir = QDir(base).filePath(
+        QStringLiteral("session_%1")
+            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))));
+    QDir().mkpath(m_archiveSessionDir);
+    LOG_INFO("[MainWindow] 新建归档会话目录: " + m_archiveSessionDir);
+}
+
+void MainWindow::initPersonFolder()
+{
+    ensureArchiveSessionDir();
+    m_personFolder = new PersonFolder(m_archiveSessionDir);
     m_personFolder->setSaveEveryN(m_config.personSaveEveryN);
-    LOG_INFO("[MainWindow] 按乘客分目录归档已就绪: " + base);
+    LOG_INFO("[MainWindow] 按乘客分目录归档已就绪: " + m_archiveSessionDir);
 }
 
 void MainWindow::saveSessionState()
 {
     QJsonObject root;
+    root[QStringLiteral("archiveSessionDir")] = m_archiveSessionDir;
     if (m_personFolder)
         root[QStringLiteral("personFolder")] = m_personFolder->stateToJson();
 
@@ -2413,6 +2992,7 @@ void MainWindow::saveSessionState()
         e[QStringLiteral("time")] = r.time.toString(Qt::ISODate);
         e[QStringLiteral("matchedPersonId")] = r.matchedPersonId;
         e[QStringLiteral("similarity")] = static_cast<double>(r.similarity);
+        e[QStringLiteral("manualConfirm")] = r.manualConfirm;
         events.append(e);
     }
     root[QStringLiteral("personEvents")] = events;
@@ -2457,6 +3037,7 @@ void MainWindow::loadSessionState()
         r.time = QDateTime::fromString(e.value(QStringLiteral("time")).toString(), Qt::ISODate);
         r.matchedPersonId = e.value(QStringLiteral("matchedPersonId")).toInt(-1);
         r.similarity = static_cast<float>(e.value(QStringLiteral("similarity")).toDouble());
+        r.manualConfirm = e.value(QStringLiteral("manualConfirm")).toInt(0);
         m_personEventRows.append(r);
     }
 
@@ -2479,6 +3060,29 @@ void MainWindow::loadSessionState()
 void MainWindow::initWebServer()
 {
     m_webServer = new StatusWebServer(this);
+    connect(m_webServer, &StatusWebServer::controlRequested,
+            this, &MainWindow::webControl);
+
+    // 视频目录（前端页面视频列表）
+    m_webServer->setVideoDir(
+        QStringLiteral("/media/tianheng/test/16.reId/CameraViewer_passenger/passenger_videos"));
+    // person 乘客图片目录提供回调（前端匹配确认时显示上/下车缩略图）
+    m_webServer->setPersonImageProvider([this](int personId) -> QString {
+        if (!m_personFolder) return QString();
+        return m_personFolder->cropImagesDir(personId);
+    });
+    // 当前帧 JPEG 提供回调（前端实时画面，请求时编码，避免持续开销）
+    m_webServer->setFrameProvider([this]() -> QByteArray {
+        QMutexLocker locker(&m_frameMutex);
+        if (m_currentFrame.isNull()) return QByteArray();
+        QByteArray jpeg;
+        QBuffer buf(&jpeg);
+        buf.open(QIODevice::WriteOnly);
+        m_currentFrame.scaled(640, 360, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+            .save(&buf, "JPEG", 55);
+        return jpeg;
+    });
+
     if (m_config.webServerEnabled) {
         if (!m_webServer->start(static_cast<quint16>(m_config.webServerPort))) {
             LOG_WARN("[MainWindow] Web 状态服务启动失败（端口可能被占用）");
@@ -2495,13 +3099,89 @@ void MainWindow::pushWebStatus()
 
     QJsonObject st;
     st["time"] = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+    st["status"] = m_isCapturing ? QStringLiteral("运行中") : QStringLiteral("已停止");
+    st["mode"] = m_videoMode ? QStringLiteral("视频") : QStringLiteral("相机");
+    st["speed"] = m_videoMode ? QString::number(m_videoSpeed, 'f', 1) + QStringLiteral("x")
+                              : QStringLiteral("实时");
     st["boarding"] = m_zoneMonitor ? m_zoneMonitor->boardingCount() : m_boardingCount;
     st["alighting"] = m_zoneMonitor ? m_zoneMonitor->alightingCount() : m_alightingCount;
     st["onboard"] = m_onboardCount;
     st["regionPersons"] = m_currentPersonCount;
     st["station"] = m_currentStationName;
+    st["fps"] = QString::number(m_currentFps, 'f', 1);
+    st["version"] = QStringLiteral(APP_VERSION_DISPLAY);
     st["matches"] = m_recentMatches;
+
+    // 匹配对详情（供前端展示 + 人工确认）
+    QJsonArray matchPairs;
+    for (const PersonEventRow &r : m_personEventRows) {
+        if (r.status == QStringLiteral("上车") && r.matchedPersonId > 0) {
+            QJsonObject p;
+            p["boardId"] = r.personId;
+            p["alightId"] = r.matchedPersonId;
+            p["similarity"] = r.similarity;
+            p["time"] = r.time.toString(QStringLiteral("MM-dd HH:mm:ss"));
+            p["confirm"] = r.manualConfirm;
+            matchPairs.append(p);
+        }
+    }
+    st["matchPairs"] = matchPairs;
+
+    // 人员进出记录（最近 50 条，倒序）
+    QJsonArray events;
+    const int begin = qMax(0, m_personEventRows.size() - 50);
+    for (int i = m_personEventRows.size() - 1; i >= begin; --i) {
+        const PersonEventRow &r = m_personEventRows.at(i);
+        QJsonObject e;
+        e["person"] = r.personId;
+        e["status"] = r.status;
+        e["time"] = r.time.toString("HH:mm:ss");
+        e["sim"] = QString::number(r.similarity, 'f', 3);
+        e["confirm"] = r.manualConfirm;
+        events.append(e);
+    }
+    st["events"] = events;
+
     m_webServer->setStatus(st);
+}
+
+void MainWindow::webControl(const QString &action, const QJsonObject &params)
+{
+    if (action == QLatin1String("toggleCapture")) {
+        onToggleCapture();
+    } else if (action == QLatin1String("clearCounts")) {
+        onClearCounts();
+    } else if (action == QLatin1String("togglePlay")) {
+        onTogglePlay();
+    } else if (action == QLatin1String("loadVideo")) {
+        const QString path = params.value(QStringLiteral("path")).toString();
+        if (!path.isEmpty()) {
+            openVideoFileForPlay(path);
+        }
+    } else if (action == QLatin1String("confirmMatch")) {
+        const int boardId = params.value(QStringLiteral("boardId")).toInt();
+        const int confirm = params.value(QStringLiteral("confirm")).toInt();
+        int alightId = -1;
+        for (const PersonEventRow &r : m_personEventRows) {
+            if (r.personId == boardId && r.status == QStringLiteral("上车") && r.matchedPersonId > 0) {
+                alightId = r.matchedPersonId;
+                break;
+            }
+        }
+        for (PersonEventRow &r : m_personEventRows) {
+            if (r.personId == boardId || r.personId == alightId) {
+                r.manualConfirm = confirm;
+            }
+        }
+        saveSessionState();
+        LOG_INFO(QString("[MainWindow] Web 人工确认: person_%1 ↔ person_%2 → %3")
+                     .arg(boardId).arg(alightId)
+                     .arg(confirm == 1 ? QStringLiteral("正确")
+                                       : confirm == 2 ? QStringLiteral("错误") : QStringLiteral("未确认")));
+    } else {
+        LOG_WARN(QString("[MainWindow] 未知 Web 控制指令: %1").arg(action));
+    }
+    pushWebStatus();
 }
 
 void MainWindow::savePersonAppearanceFrames(const QVector<TrackedPerson> &persons,
@@ -3034,8 +3714,16 @@ void MainWindow::onClearCounts()
     // 清空乘客台账（上车记录）
     if (m_passengerBook) m_passengerBook->clear();
 
-    // 按乘客分目录归档：会话序号归 1、上车目录登记表清空、关闭视频写入
-    if (m_personFolder) m_personFolder->reset();
+    // 清除计数 → 更新归档保存路径（新建会话目录），person 序号归 1、关闭旧视频写入
+    m_archiveSessionDir.clear();
+    ensureArchiveSessionDir(false);   // false：清除计数强制新建，不复用上次目录
+    if (m_personFolder) {
+        m_personFolder->reset();   // 关闭旧视频写入器
+        delete m_personFolder;
+        m_personFolder = nullptr;
+    }
+    m_personFolder = new PersonFolder(m_archiveSessionDir);
+    m_personFolder->setSaveEveryN(m_config.personSaveEveryN);
     m_boardFolders.clear();
     m_folderMatchPending.clear();
     m_personEventRows.clear();
@@ -3488,6 +4176,10 @@ void MainWindow::applySettings()
                                            m_config.reidWeightTexture,
                                            m_config.reidWeightShape);
         m_matchWorker->setDeepReid(m_deepReid, m_config.reidUseDeepReid);
+    }
+    // 目录全图比对线程同样绑定深度后端（否则下车后 FolderMatch 会因 m_deep 未就绪跳过比对）
+    if (m_folderMatchWorker) {
+        m_folderMatchWorker->setDeepReid(m_deepReid, m_config.reidUseDeepReid);
     }
     if (m_grabThread) {
         m_grabThread->setBackgroundModel(m_config.reidUseBackground ? m_bgModel : nullptr);

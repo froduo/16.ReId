@@ -140,6 +140,10 @@ struct AppConfig {
     // 描述子稳定性提升后，同一人上/下车实测相似度约 0.67~0.85，
     // 故将匹配阈值由 0.70 下调为 0.65（离线实测校准，见 offline_reid_*)。
     float reidMatchThreshold = 0.65f;
+    // 「自由访客」（从未穿越/已下车）允许被 ReID 复用为同一 visitor 的最大时间窗(ms)。
+    // 真正的轨迹断裂恢复是秒级；超过此窗口（如几分钟）即视为不同乘客、新建 visitor，
+    // 避免把先后出现的不同乘客误并入同一 person 目录（A→B→C 身份漂移）。
+    int visitorFreeMaxAgeMs = 30000;
     // 多特征融合权重（颜色 / 纹理 / 身形），内部自动归一化
     // 颜色在鱼眼俯视跨朝向场景下最不稳定，降低其权重。
     float reidWeightColor = 0.30f;
@@ -297,6 +301,7 @@ struct AppConfig {
         // ReID 参数
         s.beginGroup("ReID");
         s.setValue("MatchThreshold", static_cast<double>(reidMatchThreshold));
+        s.setValue("VisitorFreeMaxAgeMs", visitorFreeMaxAgeMs);
         s.setValue("WeightColor", static_cast<double>(reidWeightColor));
         s.setValue("WeightTexture", static_cast<double>(reidWeightTexture));
         s.setValue("WeightShape", static_cast<double>(reidWeightShape));
@@ -433,6 +438,7 @@ struct AppConfig {
 
         // ReID 参数
         reidMatchThreshold = static_cast<float>(s.value("ReID/MatchThreshold", 0.65).toDouble());
+        visitorFreeMaxAgeMs = s.value("ReID/VisitorFreeMaxAgeMs", 30000).toInt();
         reidWeightColor = static_cast<float>(s.value("ReID/WeightColor", 0.30).toDouble());
         reidWeightTexture = static_cast<float>(s.value("ReID/WeightTexture", 0.40).toDouble());
         reidWeightShape = static_cast<float>(s.value("ReID/WeightShape", 0.30).toDouble());

@@ -54,6 +54,9 @@ public:
     /// 查询 track 对应的 person 编号；不存在返回 -1
     int personIdForTrack(int trackId) const;
     bool hasPerson(int trackId) const { return m_trackToPerson.contains(trackId); }
+    /// 清空 track→person 映射：track ID 会随 PersonTracker 重建而复用，
+    /// 若不清理，新 track 会误复用旧 person 编号（表现为 person_N 重新从 1 开始）。
+    void clearTrackMappings() { m_trackToPerson.clear(); }
 
     /**
      * @brief 保存一帧：原始整帧 → 原始图片/，人体裁剪 → 乘客图片/（带节流）
@@ -72,6 +75,13 @@ public:
 
     /// 写入/更新该乘客的方向判定（上车/下车 + 时间），并刷新汇总 match.txt
     void setDirection(int personId, bool boarding, const QDateTime &time);
+
+    /// 查询该乘客是否已判定为「上车」（用于区分同一 track 的首次穿越与再次穿越）
+    bool isBoarding(int personId) const { return m_boarding.value(personId, false); }
+
+    /// 将乘客方向改写为「上车折返/下车折返」（第三/四状态），不计入上下车统计；
+    /// 供 MainWindow 收到 ZoneMonitor 的无效事件时回滚调用。
+    void setInvalid(int personId, bool wasBoarding, const QDateTime &time);
 
     /// 关闭该乘客的原始图片视频写入（穿越完成/乘客消失时调用）
     void closeVideo(int personId);
@@ -123,6 +133,7 @@ private:
     QMap<int, int> m_personSeq;       // person 编号 -> 图片序号
 
     QMap<int, bool> m_boarding;       // person 编号 -> true=上车, false=下车
+    QMap<int, QString> m_invalid;     // person 编号 -> "上车折返"/"下车折返"（第三/四状态）
     QMap<int, QDateTime> m_eventTime; // person 编号 -> 事件时间
     QMap<int, int> m_matchedWith;     // person 编号 -> 匹配到的对方 person 编号
     QMap<int, float> m_matchedSim;    // person 编号 -> 匹配相似度
