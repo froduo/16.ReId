@@ -28,80 +28,7 @@
       <attribute name="title">
        <string>相机设置</string>
       </attribute>
-      <layout class="QVBoxLayout" name="cameraMainLayout">
-        <property name="spacing"><number>8</number></property>
-        <item>
-         <widget class="QGroupBox" name="groupBox_search">
-          <property name="title"><string>相机搜索</string></property>
-          <layout class="QVBoxLayout" name="searchLayout">
-           <property name="spacing"><number>6</number></property>
-           <item>
-            <layout class="QHBoxLayout" name="searchBtnLayout">
-             <item>
-              <widget class="QPushButton" name="btn_searchCameras">
-               <property name="text"><string>🔍 搜索相机</string></property>
-               <property name="toolTip"><string>通过 ACP 广播 + 局域网端口扫描搜索相机设备</string></property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QLabel" name="label_searchStatus">
-               <property name="text"><string>点击「搜索相机」开始扫描局域网设备</string></property>
-              </widget>
-             </item>
-             <item>
-              <spacer name="searchSpacer">
-               <property name="orientation"><enum>Qt::Horizontal</enum></property>
-               <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
-              </spacer>
-             </item>
-            </layout>
-           </item>
-           <item>
-            <widget class="QTableWidget" name="table_devices">
-             <property name="minimumSize"><size><width>0</width><height>140</height></size></property>
-             <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
-             <property name="selectionMode"><enum>QAbstractItemView::SingleSelection</enum></property>
-             <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
-             <property name="columnCount"><number>8</number></property>
-             <column><property name="text"><string>名称</string></property></column>
-             <column><property name="text"><string>IP</string></property></column>
-             <column><property name="text"><string>类型</string></property></column>
-             <column><property name="text"><string>协议</string></property></column>
-             <column><property name="text"><string>视频端口</string></property></column>
-             <column><property name="text"><string>控制端口</string></property></column>
-             <column><property name="text"><string>账号</string></property></column>
-             <column><property name="text"><string>状态</string></property></column>
-            </widget>
-           </item>
-           <item>
-            <layout class="QHBoxLayout" name="searchActionLayout">
-             <item>
-              <widget class="QPushButton" name="btn_applyDevice">
-               <property name="text"><string>应用所选设备</string></property>
-               <property name="toolTip"><string>将选中的设备参数填充到下方连接参数</string></property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QPushButton" name="btn_verifyDevice">
-               <property name="text"><string>验证连接</string></property>
-               <property name="toolTip"><string>用当前连接参数测试 RTSP 流是否可打开</string></property>
-              </widget>
-             </item>
-             <item>
-              <spacer name="actionSpacer">
-               <property name="orientation"><enum>Qt::Horizontal</enum></property>
-               <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
-              </spacer>
-             </item>
-            </layout>
-           </item>
-          </layout>
-         </widget>
-        </item>
-        <item>
-         <widget class="QGroupBox" name="groupBox_conn">
-          <property name="title"><string>连接参数</string></property>
-          <layout class="QFormLayout" name="cameraFormLayout">
+      <layout class="QFormLayout" name="cameraFormLayout">
        <property name="horizontalSpacing"><number>12</number></property>
        <property name="verticalSpacing"><number>8</number></property>
        <item row="0" column="0">
@@ -161,9 +88,6 @@
         </widget>
        </item>
       </layout>
-         </widget>
-        </item>
-       </layout>
      </widget>
      <!-- ===== Tab 2: 推理设置 ===== -->
      <widget class="QWidget" name="tabInference">

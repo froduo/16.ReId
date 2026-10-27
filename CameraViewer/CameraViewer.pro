@@ -1,4 +1,4 @@
-QT       += core gui network sql concurrent
+QT       += core gui network sql
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
@@ -10,7 +10,6 @@ DEFINES += USE_OPENCV_CUDA
 SOURCES += \
     src/main.cpp \
     src/cameracontroller.cpp \
-    src/camerasearcher.cpp \
     src/grabthread.cpp \
     src/imageview.cpp \
     src/overlaytext.cpp \
@@ -35,7 +34,6 @@ HEADERS += \
     src/version.h \
     src/app_config.h \
     src/cameracontroller.h \
-    src/camerasearcher.h \
     src/grabthread.h \
     src/imageview.h \
     src/overlaytext.h \
