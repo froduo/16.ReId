@@ -4,11 +4,13 @@
 #include <QObject>
 #include <QString>
 #include <opencv2/opencv.hpp>
+#include "ffmpegcapture.h"
 
 /**
- * @brief RTSP 相机控制器，基于 OpenCV VideoCapture
+ * @brief 相机控制器
  *
- * 用 OpenCV VideoCapture 连接 HX-CCD23 相机的 RTSP 流。
+ * RTSP 实时流用 FFmpeg 直接拉流（FfmpegCapture，坏帧 conceal 容错，与 VLC 对齐）；
+ * 本地视频文件用 OpenCV VideoCapture（离线检测/倍速播放）。
  */
 class CameraController : public QObject
 {
@@ -75,7 +77,8 @@ signals:
     void deviceDisconnected();
 
 private:
-    cv::VideoCapture m_cap;
+    cv::VideoCapture m_cap;      // 本地视频文件（OpenCV）
+    FfmpegCapture m_ffCap;       // RTSP 实时流（FFmpeg 直接拉流，坏帧容错）
     QString m_rtspUrl;
     bool m_isVideoFile{false};
     int m_frameWidth = 0;

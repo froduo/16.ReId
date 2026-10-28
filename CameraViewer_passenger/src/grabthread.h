@@ -116,9 +116,13 @@ private:
     CameraController* m_camera;
     QString m_channelName;
     int m_consecutiveFailCount{0};
-    // 连续失败阈值：配合 FFmpeg stimeout(2s)，连续 2 次读超时（约 4~6 秒）
-    // 即判定相机掉线并触发重连，缩短漏检窗口。
-    static const int MAX_FAIL_COUNT = 2;
+    // 连续失败判定掉线：改为「连续失败时长」判定，容忍网络抖动与偶发坏帧。
+    // VLC 无卡顿的关键即在此——对坏帧/抖动容错，不会因单帧失败就断开重连：
+    //   - 坏帧（read 立即返回失败）：几秒内即恢复，不会累计到 FAIL_TIMEOUT_MS，不误判；
+    //   - 真正断流（read 阻塞 stimeout≈6s 后返回失败）：约 2 个周期(≈12s)判定掉线。
+    static const qint64 FAIL_TIMEOUT_MS = 12000;   // 连续失败累计超过 12s 判定掉线
+    static const int   MAX_FAIL_COUNT = 1000;      // 兜底：快速失败次数上限（防极端空转）
+    qint64 m_failStartMs{0};                       // 连续失败起始时刻（0=当前无失败）
 
     // 检测管线
     PersonDetector *m_detector{nullptr};

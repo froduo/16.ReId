@@ -35,7 +35,8 @@ SOURCES += \
     src/tripdatastore.cpp \
     src/personfolder.cpp \
     src/foldermatchworker.cpp \
-    src/statuswebserver.cpp
+    src/statuswebserver.cpp \
+    src/ffmpegcapture.cpp
 
 HEADERS += \
     src/version.h \
@@ -66,7 +67,8 @@ HEADERS += \
     src/personfolder.h \
     src/foldermatchworker.h \
     src/statuswebserver.h \
-    src/hungarian.h
+    src/hungarian.h \
+    src/ffmpegcapture.h
 
 FORMS += \
     src/mainwindow.ui \
@@ -85,8 +87,14 @@ LIBS += \
     -lopencv_imgcodecs \
     -lopencv_videoio \
     -lopencv_dnn \
-    -lopencv_video \
+    -lopencv_video
 
+# FFmpeg 7.x（RTSP 直接拉流，坏帧 conceal 容错，与 VLC 对齐）
+# 注意：必须用 /usr/local 下的 FFmpeg 7.x（与 OpenCV 内置 FFmpeg 版本一致，major=61），
+# 若误用系统 FFmpeg 4.x（/lib/x86_64-linux-gnu，major=58）会与 OpenCV 的 FFmpeg 7.x
+# 产生 ABI 冲突（同名符号、结构布局不同），运行时崩溃。
+INCLUDEPATH += /usr/local/include
+LIBS += -L/usr/local/lib -lavformat -lavcodec -lavutil -lswscale
 # TensorRT & CUDA
 INCLUDEPATH += /usr/local/cuda/include \
     /usr/local/TensorRT-10.3/include

@@ -201,24 +201,33 @@ void GrabThread::run()
             continue;
         }
 
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         if (!m_camera->getFrame(frame)) {
+            if (m_failStartMs == 0) m_failStartMs = nowMs;
             m_consecutiveFailCount++;
+            const qint64 failElapsed = nowMs - m_failStartMs;
+
             if (m_consecutiveFailCount == 1) {
-                LOG_WARN(QString("[GrabThread-%1] First frame grab failed, consecutive: %2/%3")
-                         .arg(m_channelName).arg(m_consecutiveFailCount).arg(MAX_FAIL_COUNT));
+                LOG_WARN(QString("[GrabThread-%1] Frame grab failed (#1)，进入容错窗口（坏帧/抖动不立即判掉线）")
+                         .arg(m_channelName));
             } else if (m_consecutiveFailCount % 50 == 0) {
-                LOG_WARN(QString("[GrabThread-%1] Consecutive failures: %2/%3")
-                         .arg(m_channelName).arg(m_consecutiveFailCount).arg(MAX_FAIL_COUNT));
+                LOG_WARN(QString("[GrabThread-%1] Consecutive failures: %2 (elapsed %3ms)")
+                         .arg(m_channelName).arg(m_consecutiveFailCount).arg(failElapsed));
             }
 
-            if (m_consecutiveFailCount >= MAX_FAIL_COUNT) {
+            // 掉线判定：连续失败「时长」超过阈值，或「次数」达到兜底上限。
+            // 坏帧（read 立即失败）几秒内即恢复，不会误判；真正断流（read 阻塞
+            // stimeout 后失败）约 2 个周期内判定掉线。
+            const bool timedOut = failElapsed >= FAIL_TIMEOUT_MS;
+            const bool tooMany  = m_consecutiveFailCount >= MAX_FAIL_COUNT;
+            if (timedOut || tooMany) {
                 if (m_camera->isVideoFile()) {
                     LOG_INFO(QString("[GrabThread-%1] 视频文件读取完毕，共 %2 帧")
                                  .arg(m_channelName).arg(frameIndex));
                     emit videoFinished();
                 } else {
-                    LOG_ERR(QString("[GrabThread-%1] MAX_FAIL_COUNT reached, emitting deviceLost")
-                            .arg(m_channelName));
+                    LOG_ERR(QString("[GrabThread-%1] 连续读帧失败 %2ms/%3 次，判定掉线")
+                            .arg(m_channelName).arg(failElapsed).arg(m_consecutiveFailCount));
                     emit deviceLost();
                 }
                 m_running = false;
@@ -230,9 +239,10 @@ void GrabThread::run()
 
         // 成功获取帧，重置失败计数
         if (m_consecutiveFailCount > 0) {
-            LOG_INFO(QString("[GrabThread-%1] Frame grab recovered after %2 failures")
-                     .arg(m_channelName).arg(m_consecutiveFailCount));
+            LOG_INFO(QString("[GrabThread-%1] Frame grab recovered after %2 failures (%3ms)")
+                     .arg(m_channelName).arg(m_consecutiveFailCount).arg(nowMs - m_failStartMs));
             m_consecutiveFailCount = 0;
+            m_failStartMs = 0;
         }
 
         frameIndex++;
