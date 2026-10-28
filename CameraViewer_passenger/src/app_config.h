@@ -17,6 +17,10 @@ struct AppConfig {
     //   false（默认）—— URL 始终由 IP/端口/用户名/密码 派生，保证「改 IP 即生效」；
     //   true          —— 使用上面的自定义 rtspUrl，忽略 IP 等参数（高级用法）。
     bool cameraRtspManual = false;
+    // 相机拉流后端：
+    //   "opencv" —— 标准 RTSP（OpenCV VideoCapture，默认，兼容所有标准 RTSP 相机）
+    //   "dahua"  —— 大华 NetSDK 私有协议（绕开 packetization-mode=0 导致的大 I 帧 IP 分片丢包卡顿）
+    QString cameraBackend = "opencv";
 
     // 主界面标题
     QString windowTitle = "HX-CCD23 人员检测 ReID 系统";
@@ -224,6 +228,7 @@ struct AppConfig {
         s.setValue("Port", cameraPort);
         s.setValue("RTSP_URL", rtspUrl);
         s.setValue("RTSP_Manual", cameraRtspManual);
+        s.setValue("Backend", cameraBackend);
         s.setValue("EntryDirection", entryDirection);
         s.endGroup();
 
@@ -364,6 +369,7 @@ struct AppConfig {
         // 是否手动指定 RTSP URL（缺省 false → 以相机 IP/端口为唯一事实来源）
         cameraRtspManual = s.value("Camera/RTSP_Manual", false).toBool();
         rtspUrl = s.value("Camera/RTSP_URL", QString()).toString();
+        cameraBackend = s.value("Camera/Backend", "opencv").toString();
         // 关键修复：默认始终按「相机 IP + 端口 + 用户名 + 密码」重建 RTSP URL，
         // 避免历史 config.ini 中残留的旧 RTSP_URL 覆盖用户新配置的相机 IP，
         // 导致「改了 IP 但启动相机仍连旧地址」。仅当用户显式开启手动指定时才沿用自定义 URL。

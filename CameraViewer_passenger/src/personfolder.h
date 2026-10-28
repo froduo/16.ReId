@@ -93,6 +93,13 @@ public:
     void markMatched(int boardPersonId, int alightPersonId,
                      float similarity, const QDateTime &time);
 
+    /// 查询某 person 已匹配的对方 person 编号（未匹配返回 -1）
+    int matchedWith(int personId) const { return m_matchedWith.value(personId, -1); }
+
+    /// 撤销某 person 的匹配（折返/门口逗留等状态不参与匹配时调用），
+    /// 清除双方 match.txt 的匹配对象与相似度，并刷新汇总。
+    void unmarkMatched(int personId);
+
     QString personDir(int personId) const;
     QString personName(int personId) const;   // 例如 person_1_20261013_180200
     /// 导出会话状态（重启后恢复用）

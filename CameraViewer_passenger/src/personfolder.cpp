@@ -500,3 +500,30 @@ void PersonFolder::markMatched(int boardPersonId, int alightPersonId,
                  .arg(personName(boardPersonId), personName(alightPersonId))
                  .arg(similarity, 0, 'f', 4));
 }
+
+void PersonFolder::unmarkMatched(int personId)
+{
+    if (personId <= 0) return;
+
+    // 清除对方的匹配标记（上/下车配对是双向的）
+    if (m_matchedWith.contains(personId)) {
+        const int other = m_matchedWith.value(personId);
+        if (other > 0 && other != personId) {
+            m_matchedWith.remove(other);
+            m_matchedSim.remove(other);
+            m_matched.remove(other);
+            writeMarker(other);
+        }
+    }
+
+    // 清除自身的匹配标记
+    m_matchedWith.remove(personId);
+    m_matchedSim.remove(personId);
+    m_matched.remove(personId);
+    writeMarker(personId);
+    writeSummary();
+
+    LOG_INFO(QString("[PersonFolder] person_%1 匹配已撤销（折返/逗留状态不参与匹配）")
+                  .arg(personId));
+}
+

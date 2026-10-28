@@ -58,10 +58,10 @@ void StatusWebServer::setStatus(const QJsonObject &status)
     m_status = status;
 }
 
-void StatusWebServer::setFrameProvider(std::function<QByteArray()> provider)
+void StatusWebServer::setFrame(const QByteArray &jpeg)
 {
     QMutexLocker locker(&m_mutex);
-    m_frameProvider = std::move(provider);
+    m_frameJpeg = jpeg;
 }
 
 void StatusWebServer::setVideoDir(const QString &dir)
@@ -158,12 +158,8 @@ void StatusWebServer::handleRequest(QTcpSocket *sock, const QByteArray &request)
         body = QJsonDocument(resp).toJson(QJsonDocument::Compact);
         contentType = QByteArrayLiteral("application/json; charset=utf-8");
     } else if (path.startsWith(QLatin1String("/api/frame"))) {
-        QByteArray jpeg;
-        {
-            QMutexLocker locker(&m_mutex);
-            if (m_frameProvider) jpeg = m_frameProvider();
-        }
-        body = jpeg;
+        QMutexLocker locker(&m_mutex);
+        body = m_frameJpeg;
         contentType = QByteArrayLiteral("image/jpeg");
     } else if (path.startsWith(QLatin1String("/api/videos"))) {
         QJsonArray arr;
@@ -192,7 +188,7 @@ void StatusWebServer::handleRequest(QTcpSocket *sock, const QByteArray &request)
         body = QJsonDocument(st).toJson(QJsonDocument::Compact);
         contentType = QByteArrayLiteral("application/json; charset=utf-8");
     } else {
-        body = R"(<!DOCTYPE html>
+        body = R"HTML(<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -244,7 +240,6 @@ th{color:#8b949e;font-weight:normal}
 <div class="section" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
 <span style="font-size:13px;color:#8b949e">控制：</span>
 <button class="btn primary" onclick="ctrl('toggleCapture')">启动/停止采集</button>
-<button class="btn" onclick="ctrl('togglePlay')">播放/暂停</button>
 <button class="btn danger" onclick="ctrl('clearCounts')">清除计数</button>
 </div>
 <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
@@ -256,6 +251,7 @@ th{color:#8b949e;font-weight:normal}
 <h3>视频列表</h3>
 <select id="videoSel" style="width:100%;padding:8px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px;margin-bottom:8px"></select>
 <button class="btn primary" onclick="loadVideo()" style="width:100%">加载所选视频</button>
+<button class="btn" onclick="ctrl('togglePlay')" style="width:100%;margin-top:6px">播放/暂停</button>
 </div>
 </div>
 <div class="grid">
@@ -341,14 +337,16 @@ if(path)ctrl('loadVideo',{path});
 }
 function refreshFrame(){
 const img=document.getElementById('frame');
+img.onload=function(){setTimeout(refreshFrame,200);};
+img.onerror=function(){setTimeout(refreshFrame,500);};
 img.src='/api/frame?t='+Date.now();
 }
 refresh();setInterval(refresh,3000);
 loadVideos();
-setInterval(refreshFrame,500);
+refreshFrame();
 </script>
 </body>
-</html>)";
+</html>)HTML";
         contentType = QByteArrayLiteral("text/html; charset=utf-8");
     }
 

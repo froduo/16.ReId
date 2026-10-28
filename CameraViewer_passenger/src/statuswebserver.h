@@ -36,8 +36,8 @@ public:
 
     /// 更新最新状态快照
     void setStatus(const QJsonObject &status);
-    /// 设置当前帧 JPEG 提供回调（/api/frame 请求时调用，返回 JPEG 字节）
-    void setFrameProvider(std::function<QByteArray()> provider);
+    /// 更新当前帧 JPEG 缓存（由 MainWindow 在帧回调里节流推送，/api/frame 直接返回缓存，避免请求时编码与锁竞争）
+    void setFrame(const QByteArray &jpeg);
     /// 设置视频目录（/api/videos 扫描该目录下的 .mp4）
     void setVideoDir(const QString &dir);
     /// 设置 person 乘客图片目录提供回调（/api/person_images 用，返回某 personId 的乘客图片目录）
@@ -56,7 +56,7 @@ private:
     QTcpServer *m_server{nullptr};
     QMutex m_mutex;
     QJsonObject m_status;
-    std::function<QByteArray()> m_frameProvider;
+    QByteArray m_frameJpeg;   // 最新帧 JPEG 缓存
     QString m_videoDir;
     std::function<QString(int)> m_personImageProvider;
     quint16 m_port{0};

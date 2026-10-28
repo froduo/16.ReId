@@ -11,14 +11,14 @@
 
 #define APP_VERSION_MAJOR 1
 #define APP_VERSION_MINOR 1
-#define APP_VERSION_PATCH 144
+#define APP_VERSION_PATCH 154
 
-#define APP_VERSION_STRING "1.1.144"
+#define APP_VERSION_STRING "1.1.154"
 
-#define APP_BUILD_DATE "2026-10-27"
-#define APP_BUILD_TIME "14:12:49"
+#define APP_BUILD_DATE "2026-10-28"
+#define APP_BUILD_TIME "10:34:56"
 
-// 显示用版本号，例如 "v1.1.144"
+// 显示用版本号，例如 "v1.1.154"
 #define APP_VERSION_DISPLAY ("v" APP_VERSION_STRING)
 
 #define APP_PRODUCT_NAME "HX-CCD23 人员检测 ReID 系统"
