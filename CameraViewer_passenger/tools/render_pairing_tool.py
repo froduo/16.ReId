@@ -11,7 +11,7 @@
 用法（yolotest 环境）：
   /home/tianheng/miniconda3/envs/yolotest/bin/python render_pairing_tool.py \
       --sessions <session目录1> <session目录2> ... \
-      --out /media/tianheng/test/16.reId/pairing_tool.html \
+      --out /media/tianheng/test/16.reId/CameraViewer_passenger/pairing_tool.html \
       --max-imgs 6 [--prefill 预配对结果.json]
 
 --prefill 可传 manual_pairs.json 或 match_result.json（程序预配对结果），
@@ -288,7 +288,7 @@ def load_prefill(path, persons_by_name):
 def main():
     ap = argparse.ArgumentParser(description='生成人工配对交互式 HTML 工具')
     ap.add_argument('--sessions', nargs='+', required=True, help='一个或多个 session 目录')
-    ap.add_argument('--out', default='/media/tianheng/test/16.reId/pairing_tool.html')
+    ap.add_argument('--out', default='/media/tianheng/test/16.reId/CameraViewer_passenger/pairing_tool.html')
     ap.add_argument('--max-imgs', type=int, default=10, help='每个 person 展示的代表图数量（至少 10 张）')
     ap.add_argument('--prefill', default=None,
                     help='预配对结果 JSON（manual_pairs.json 或 match_result.json），预填供人工核对/修正')

@@ -156,7 +156,7 @@ def static_pixdiff(d, max_n=20):
 def main():
     ap = argparse.ArgumentParser(description='person 归档后处理分析（dry-run）')
     ap.add_argument('--root', required=True, help='save_images 根目录')
-    ap.add_argument('--model', default='/media/tianheng/test/16.reId/passenger_reid_dataset_v3/osnet_best.pth',
+    ap.add_argument('--model', default='/media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset_v3/osnet_best.pth',
                     help='OSNet 模型路径（pth，默认用 v3 最新训练）')
     ap.add_argument('--out', default='postprocess_report.json', help='报告输出路径')
     ap.add_argument('--limit', type=int, default=0, help='最多处理 person 数（0=全部）')

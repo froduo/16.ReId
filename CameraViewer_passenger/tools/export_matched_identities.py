@@ -11,9 +11,9 @@
 
 用法（yolotest 环境）：
   /home/tianheng/miniconda3/envs/yolotest/bin/python export_matched_identities.py \
-      --match /media/tianheng/test/16.reId/match_result.json \
+      --match /media/tianheng/test/16.reId/CameraViewer_passenger/match_result.json \
       --sessions <session目录1> <session目录2> ... \
-      --out /media/tianheng/test/16.reId/passenger_reid_dataset \
+      --out /media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset \
       --min-sim 0.85 --min-images 10
 """
 import argparse
@@ -66,7 +66,7 @@ def main():
     ap = argparse.ArgumentParser(description='按高置信匹配合并身份并导出 ReID 数据集')
     ap.add_argument('--match', required=True, help='match_result.json 路径')
     ap.add_argument('--sessions', nargs='+', required=True, help='一个或多个 session 目录')
-    ap.add_argument('--out', default='/media/tianheng/test/16.reId/passenger_reid_dataset')
+    ap.add_argument('--out', default='/media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset')
     ap.add_argument('--min-sim', type=float, default=0.85, help='高置信匹配阈值，>= 此值自动合并')
     ap.add_argument('--min-images', type=int, default=10, help='每个身份最少图片数，低于则跳过')
     args = ap.parse_args()

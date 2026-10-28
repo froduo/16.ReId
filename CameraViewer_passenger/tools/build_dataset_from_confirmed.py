@@ -12,7 +12,7 @@
   /home/tianheng/miniconda3/envs/yolotest/bin/python build_dataset_from_confirmed.py \
       --pairs confirmed_pairs.json \
       --sessions <session目录> \
-      --out /media/tianheng/test/16.reId/passenger_reid_dataset_v2 \
+      --out /media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset_v2 \
       --min-images 10 [--dry-run]
 """
 import argparse
@@ -53,7 +53,7 @@ def main():
     ap = argparse.ArgumentParser(description='按人工确认配对新建 ReID 数据集')
     ap.add_argument('--pairs', required=True, help='confirmed_pairs.json 路径')
     ap.add_argument('--sessions', nargs='+', required=True, help='一个或多个 session 目录')
-    ap.add_argument('--out', default='/media/tianheng/test/16.reId/passenger_reid_dataset_v2')
+    ap.add_argument('--out', default='/media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset_v2')
     ap.add_argument('--min-images', type=int, default=10, help='每个身份最少图片数')
     ap.add_argument('--dry-run', action='store_true', help='只打印计划，不写文件')
     args = ap.parse_args()

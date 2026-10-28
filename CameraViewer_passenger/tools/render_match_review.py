@@ -8,9 +8,9 @@
 
 用法（yolotest 环境）：
   /home/tianheng/miniconda3/envs/yolotest/bin/python render_match_review.py \
-      --match /media/tianheng/test/16.reId/match_result.json \
+      --match /media/tianheng/test/16.reId/CameraViewer_passenger/match_result.json \
       --sessions <session目录1> <session目录2> ... \
-      --out /media/tianheng/test/16.reId/match_review.html \
+      --out /media/tianheng/test/16.reId/CameraViewer_passenger/match_review.html \
       --max-imgs 8
 """
 import argparse
@@ -44,7 +44,7 @@ def main():
     ap = argparse.ArgumentParser(description='生成匹配人工核对 HTML 对比页')
     ap.add_argument('--match', required=True, help='match_result.json 路径')
     ap.add_argument('--sessions', nargs='+', required=True, help='一个或多个 session 目录')
-    ap.add_argument('--out', default='/media/tianheng/test/16.reId/match_review.html')
+    ap.add_argument('--out', default='/media/tianheng/test/16.reId/CameraViewer_passenger/match_review.html')
     ap.add_argument('--max-imgs', type=int, default=8, help='每侧展示的代表图数量')
     ap.add_argument('--exclude', default=None,
                     help='已确认配对 JSON（confirmed_pairs.json），排除这些配对，只展示「非同一人」待重新匹配')

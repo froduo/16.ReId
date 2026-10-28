@@ -10,9 +10,9 @@
 
 用法（yolotest 环境）：
   /home/tianheng/miniconda3/envs/yolotest/bin/python rebuild_dataset_manual.py \
-      --manual /media/tianheng/test/16.reId/manual_pairs.json \
+      --manual /media/tianheng/test/16.reId/CameraViewer_passenger/manual_pairs.json \
       --sessions <session目录1> <session目录2> ... \
-      --out /media/tianheng/test/16.reId/passenger_reid_dataset \
+      --out /media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset \
       --min-images 10 --keep-max-id 3
 """
 import argparse
@@ -55,7 +55,7 @@ def main():
     ap = argparse.ArgumentParser(description='按人工配对重建 ReID 数据集')
     ap.add_argument('--manual', required=True, help='manual_pairs.json 路径')
     ap.add_argument('--sessions', nargs='+', required=True, help='一个或多个 session 目录')
-    ap.add_argument('--out', default='/media/tianheng/test/16.reId/passenger_reid_dataset')
+    ap.add_argument('--out', default='/media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset')
     ap.add_argument('--min-images', type=int, default=10, help='每个身份最少图片数')
     ap.add_argument('--keep-max-id', type=int, default=3, help='保留的既有身份编号上限（如 3=保留 passenger_001~003）')
     args = ap.parse_args()

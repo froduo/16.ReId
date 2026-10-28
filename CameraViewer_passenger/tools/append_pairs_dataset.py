@@ -13,9 +13,9 @@
 
 用法（yolotest 环境）：
   /home/tianheng/miniconda3/envs/yolotest/bin/python append_pairs_dataset.py \
-      --manual /media/tianheng/test/16.reId/manual_pairs_new.json \
+      --manual /media/tianheng/test/16.reId/CameraViewer_passenger/manual_pairs_new.json \
       --sessions <session目录1> <session目录2> ... \
-      --out /media/tianheng/test/16.reId/passenger_reid_dataset \
+      --out /media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset \
       --min-images 10 [--dry-run]
 """
 import argparse
@@ -69,7 +69,7 @@ def main():
     ap = argparse.ArgumentParser(description='按人工配对增量追加 ReID 数据集')
     ap.add_argument('--manual', required=True, help='manual_pairs.json 路径（人工确认配对）')
     ap.add_argument('--sessions', nargs='+', required=True, help='一个或多个 session 目录')
-    ap.add_argument('--out', default='/media/tianheng/test/16.reId/passenger_reid_dataset')
+    ap.add_argument('--out', default='/media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset')
     ap.add_argument('--min-images', type=int, default=10, help='每个身份最少图片数')
     ap.add_argument('--dry-run', action='store_true', help='只打印计划，不实际写文件')
     args = ap.parse_args()

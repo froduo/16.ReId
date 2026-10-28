@@ -223,7 +223,7 @@ def main():
     ap = argparse.ArgumentParser(description='生成 person 乘客审核 HTML 工具')
     ap.add_argument('--session', default=None, help='单个 session 目录（与 --root 二选一）')
     ap.add_argument('--root', default=None, help='save_images 根目录，自动遍历所有 session')
-    ap.add_argument('--out', default='/media/tianheng/test/16.reId/auto_pipeline/person_audit.html')
+    ap.add_argument('--out', default='/media/tianheng/test/16.reId/CameraViewer_passenger/auto_pipeline/person_audit.html')
     ap.add_argument('--max-imgs', type=int, default=0, help='每个 person 展示图片数（0=全部）')
     args = ap.parse_args()
 

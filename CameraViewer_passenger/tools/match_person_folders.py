@@ -11,7 +11,7 @@ person_N 乘客目录「初步匹配」脚本（同一人上下车配对，供�
 用法（yolotest 环境，torch GPU）：
   /home/tianheng/miniconda3/envs/yolotest/bin/python match_person_folders.py \
       --sessions <session目录1> <session目录2> ... \
-      --model /media/tianheng/test/16.reId/passenger_reid_dataset/osnet_best.pth \
+      --model /media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset/osnet_best.pth \
       --out match_result.json [--threshold 0.60]
 """
 import argparse
@@ -118,7 +118,7 @@ def main():
     ap = argparse.ArgumentParser(description='person_N 目录级 ReID 初步匹配（同一人上下车配对）')
     ap.add_argument('--sessions', nargs='+', required=True, help='一个或多个 session 目录')
     ap.add_argument('--model',
-                    default='/media/tianheng/test/16.reId/passenger_reid_dataset/osnet_best.pth',
+                    default='/media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset/osnet_best.pth',
                     help='osnet x1_0 权重路径（.pth，默认新训练的 90 身份微调模型）')
     ap.add_argument('--out', default='match_result.json', help='匹配结果 JSON 输出路径')
     ap.add_argument('--threshold', type=float, default=0.60, help='同一人判定阈值 [0,1]')

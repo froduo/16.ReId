@@ -22,7 +22,7 @@ APP="$ROOT/CameraViewer_passenger"
 BUILD="$ROOT/build-CameraViewer_passenger-Desktop-Debug"
 EXE="$BUILD/CameraViewer_passenger"
 VIDEOS_DIR="$APP/passenger_videos"
-DATASET="$ROOT/passenger_reid_dataset"
+DATASET="$ROOT/CameraViewer_passenger/passenger_reid_dataset"
 TOOLS="$APP/tools"
 PYTHON="/home/tianheng/miniconda3/envs/yolotest/bin/python"
 
@@ -35,7 +35,7 @@ SRC_MODEL="$APP/model"
 
 DISPLAY_ENV="${DISPLAY:-:1}"
 
-WORK="$ROOT/auto_pipeline"
+WORK="$ROOT/CameraViewer_passenger/auto_pipeline"
 mkdir -p "$WORK"
 PIPE_LOG="$WORK/pipeline.log"
 DONE_FILE="$WORK/completed_videos.txt"

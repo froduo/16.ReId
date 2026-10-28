@@ -161,7 +161,7 @@ def render_person(p):
 def main():
     ap = argparse.ArgumentParser(description='生成方向人工标注 HTML 工具')
     ap.add_argument('--session', required=True, help='session 目录')
-    ap.add_argument('--out', default='/media/tianheng/test/16.reId/auto_pipeline/unknown_labeler.html')
+    ap.add_argument('--out', default='/media/tianheng/test/16.reId/CameraViewer_passenger/auto_pipeline/unknown_labeler.html')
     ap.add_argument('--max-imgs', type=int, default=0, help='每个 person 展示图片数（0=全部，横向一行滚动查看全过程）')
     ap.add_argument('--include-invalid', action='store_true',
                     help='同时包含「上车折返/下车折返」person（用于复核折返是否误判）')

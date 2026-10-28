@@ -12,10 +12,10 @@
 
 用法（yolotest 环境）：
   /home/tianheng/miniconda3/envs/yolotest/bin/python split_manual_pairs.py \
-      --manual /media/tianheng/test/16.reId/manual_pairs_20261023.json \
+      --manual /media/tianheng/test/16.reId/CameraViewer_passenger/manual_pairs_20261023.json \
       --wrong  /media/tianheng/test/16.reId/CameraViewer_passenger/tools/wrong_pairs_20261023.txt \
-      --valid-out   /media/tianheng/test/16.reId/manual_pairs_20261023_valid.json \
-      --invalid-out /media/tianheng/test/16.reId/manual_pairs_20261023_invalid.json
+      --valid-out   /media/tianheng/test/16.reId/CameraViewer_passenger/manual_pairs_20261023_valid.json \
+      --invalid-out /media/tianheng/test/16.reId/CameraViewer_passenger/manual_pairs_20261023_invalid.json
 """
 import argparse
 import json

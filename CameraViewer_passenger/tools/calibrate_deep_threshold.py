@@ -14,9 +14,9 @@ DeepMatchThreshold 标定脚本（GPU 版）
 
 用法（yolotest 环境，GPU）：
   /home/tianheng/miniconda3/envs/yolotest/bin/python calibrate_deep_threshold.py \
-      --weights /media/tianheng/test/16.reId/passenger_reid_dataset/osnet_best.pth \
+      --weights /media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset/osnet_best.pth \
       --sessions <session1> <session2> \
-      --pairs /media/tianheng/test/16.reId/manual_pairs.json
+      --pairs /media/tianheng/test/16.reId/CameraViewer_passenger/manual_pairs.json
 """
 import argparse
 import importlib.util

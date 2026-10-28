@@ -16,7 +16,7 @@ set -u
 ROOT="/media/tianheng/test/16.reId"
 APP="$ROOT/CameraViewer_passenger"
 BUILD="$ROOT/build-CameraViewer_passenger-Desktop-Debug"
-DATASET="$ROOT/passenger_reid_dataset"
+DATASET="$ROOT/CameraViewer_passenger/passenger_reid_dataset"
 
 SRC_MODEL="$APP/model"
 BUILD_MODEL="$BUILD/model"

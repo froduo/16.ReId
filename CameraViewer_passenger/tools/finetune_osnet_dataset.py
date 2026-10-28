@@ -12,8 +12,8 @@ OSNet x1.0 ReID 微调训练脚本（适配 passenger_reid_dataset 目录结构�
 
 用法（yolotest 环境，torch 2.1.2）：
   /home/tianheng/miniconda3/envs/yolotest/bin/python finetune_osnet_dataset.py \
-      --root /media/tianheng/test/16.reId/passenger_reid_dataset \
-      --weights /media/tianheng/test/16.reId/passenger_reid_dataset/osnet_best.pth \
+      --root /media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset \
+      --weights /media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset/osnet_best.pth \
       --epochs 60 --p 8 --k 4
 """
 import argparse
@@ -227,8 +227,8 @@ def export_onnx(model, out_path):
 
 def main():
     ap = argparse.ArgumentParser(description="OSNet x1.0 ReID 微调（passenger_reid_dataset）")
-    ap.add_argument("--root", default="/media/tianheng/test/16.reId/passenger_reid_dataset")
-    ap.add_argument("--weights", default="/media/tianheng/test/16.reId/passenger_reid_dataset/osnet_best.pth")
+    ap.add_argument("--root", default="/media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset")
+    ap.add_argument("--weights", default="/media/tianheng/test/16.reId/CameraViewer_passenger/passenger_reid_dataset/osnet_best.pth")
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--p", type=int, default=8)
     ap.add_argument("--k", type=int, default=4)
