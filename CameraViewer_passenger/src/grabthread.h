@@ -116,9 +116,9 @@ private:
     CameraController* m_camera;
     QString m_channelName;
     int m_consecutiveFailCount{0};
-    // 连续失败阈值：配合 FFmpeg stimeout(5s)，连续 5 次读超时（约 25~30 秒）
+    // 连续失败阈值：配合 FFmpeg stimeout(2s)，连续 2 次读超时（约 4~6 秒）
     // 即判定相机掉线并触发重连，缩短漏检窗口。
-    static const int MAX_FAIL_COUNT = 5;
+    static const int MAX_FAIL_COUNT = 2;
 
     // 检测管线
     PersonDetector *m_detector{nullptr};

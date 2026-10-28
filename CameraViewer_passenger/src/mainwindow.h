@@ -201,7 +201,7 @@ private:
     QTimer *m_reconnectTimer{nullptr};
     int m_reconnectAttempts{0};
     static const int MAX_RECONNECT_ATTEMPTS = 60;
-    static const int RECONNECT_INTERVAL_MS = 5000;
+    static const int RECONNECT_INTERVAL_MS = 2000;
 
     // 检测 / ReID
     PersonDetector *m_detector{nullptr};
@@ -304,6 +304,7 @@ private:
 
     // ===== Web 状态服务（手机端查看上下车状态）=====
     StatusWebServer *m_webServer{nullptr};
+    QElapsedTimer m_webFrameTimer;   // Web 实时画面帧推送节流计时器
     QJsonArray m_recentMatches;                    // 最近匹配记录（board/alight/similarity）
     void initWebServer();
     void pushWebStatus();

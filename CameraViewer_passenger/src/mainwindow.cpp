@@ -586,7 +586,23 @@ MainWindow::MainWindow(QWidget *parent)
         int personId = -1;
         if (m_personFolder) {
             personId = m_personFolder->personIdForTrack(evt.trackId);
-            if (personId > 0) m_personFolder->setInvalid(personId, true, t);
+            if (personId > 0) {
+                // 上车折返：撤销已发生的匹配（折返状态不参与匹配）
+                const int matchedOther = m_personFolder->matchedWith(personId);
+                if (matchedOther > 0) {
+                    m_personFolder->unmarkMatched(personId);
+                    for (BoardFolderEntry &e : m_boardFolders) {
+                        if (e.personId == personId || e.personId == matchedOther) e.matched = false;
+                    }
+                    for (PersonEventRow &r : m_personEventRows) {
+                        if (r.personId == personId || r.personId == matchedOther) {
+                            r.matchedPersonId = -1;
+                            r.similarity = 0.0f;
+                        }
+                    }
+                }
+                m_personFolder->setInvalid(personId, true, t);
+            }
         }
         if (personId > 0) {
             for (int i = m_boardFolders.size() - 1; i >= 0; --i) {
@@ -625,7 +641,25 @@ MainWindow::MainWindow(QWidget *parent)
         int personId = -1;
         if (m_personFolder) {
             personId = m_personFolder->personIdForTrack(evt.trackId);
-            if (personId > 0) m_personFolder->setInvalid(personId, false, t);
+            if (personId > 0) {
+                // 下车折返：撤销已发生的匹配（下车只匹配上车，折返状态不参与匹配）
+                const int matchedBoard = m_personFolder->matchedWith(personId);
+                if (matchedBoard > 0) {
+                    m_personFolder->unmarkMatched(personId);
+                    // 恢复上车目录的 matched=false，允许后续下车重新匹配
+                    for (BoardFolderEntry &e : m_boardFolders) {
+                        if (e.personId == matchedBoard) e.matched = false;
+                    }
+                    // 清除人员记录的匹配信息
+                    for (PersonEventRow &r : m_personEventRows) {
+                        if (r.personId == personId || r.personId == matchedBoard) {
+                            r.matchedPersonId = -1;
+                            r.similarity = 0.0f;
+                        }
+                    }
+                }
+                m_personFolder->setInvalid(personId, false, t);
+            }
         }
         if (personId > 0) {
             for (int i = m_personEventRows.size() - 1; i >= 0; --i) {
@@ -959,7 +993,14 @@ void MainWindow::onToggleCapture()
         }
 
         if (!m_camera.openCamera(m_config.rtspUrl)) {
-            QMessageBox::critical(this, "错误", "无法打开 RTSP 流:\n" + m_config.rtspUrl);
+            // 打开失败（相机掉线/不可达）：不弹窗（headless 下 QMessageBox 会阻塞），
+            // 改为标记“采集意图”并启动自动重连，相机恢复后由 onTryReconnect 拉起采集。
+            LOG_WARN("[MainWindow] 无法打开 RTSP 流，启动自动重连: " + m_config.rtspUrl);
+            m_isCapturing = true;                 // 用户意图是采集，重连成功后保持采集态
+            ui->btnToggle->setText("停止采集");
+            onGrabThreadDeviceLost();             // 复用断流重连机制（2 秒间隔定时重试）
+            updateCaptureStatus();
+            updatePlayButton();
             return;
         }
         LOG_INFO("Camera opened: " + m_config.rtspUrl);
@@ -2680,6 +2721,26 @@ void MainWindow::onFrameProcessed(const cv::Mat &bgrFrame, QVector<TrackedPerson
         m_currentFrame = displayImg;
     }
 
+    // 节流推送 Web 实时画面帧：每 200ms 编码一帧 JPEG 缓存。
+    // 编码在快照副本上进行（不长时间占用 m_frameMutex），/api/frame 直接返回缓存，
+    // 既不阻塞采集/检测线程，也不在 Web 请求时编码。
+    if (m_webServer && m_webFrameTimer.isValid() && m_webFrameTimer.elapsed() >= 200) {
+        m_webFrameTimer.restart();
+        QImage snapshot;
+        {
+            QMutexLocker locker(&m_frameMutex);
+            if (!m_currentFrame.isNull()) snapshot = m_currentFrame;
+        }
+        if (!snapshot.isNull()) {
+            QByteArray jpeg;
+            QBuffer buf(&jpeg);
+            buf.open(QIODevice::WriteOnly);
+            snapshot.scaled(640, 360, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+                .save(&buf, "JPEG", 55);
+            m_webServer->setFrame(jpeg);
+        }
+    }
+
     // 自动保存
     if (m_autoSaveEnabled && m_saveWorker && !m_diskFull) {
         QMetaObject::invokeMethod(m_saveWorker, "onSaveImage",
@@ -3071,17 +3132,7 @@ void MainWindow::initWebServer()
         if (!m_personFolder) return QString();
         return m_personFolder->cropImagesDir(personId);
     });
-    // 当前帧 JPEG 提供回调（前端实时画面，请求时编码，避免持续开销）
-    m_webServer->setFrameProvider([this]() -> QByteArray {
-        QMutexLocker locker(&m_frameMutex);
-        if (m_currentFrame.isNull()) return QByteArray();
-        QByteArray jpeg;
-        QBuffer buf(&jpeg);
-        buf.open(QIODevice::WriteOnly);
-        m_currentFrame.scaled(640, 360, Qt::KeepAspectRatio, Qt::SmoothTransformation)
-            .save(&buf, "JPEG", 55);
-        return jpeg;
-    });
+    m_webFrameTimer.start();
 
     if (m_config.webServerEnabled) {
         if (!m_webServer->start(static_cast<quint16>(m_config.webServerPort))) {
@@ -3109,7 +3160,7 @@ void MainWindow::pushWebStatus()
     st["regionPersons"] = m_currentPersonCount;
     st["station"] = m_currentStationName;
     st["fps"] = QString::number(m_currentFps, 'f', 1);
-    st["version"] = QStringLiteral(APP_VERSION_DISPLAY);
+    st["version"] = QString::fromUtf8(APP_VERSION_DISPLAY);
     st["matches"] = m_recentMatches;
 
     // 匹配对详情（供前端展示 + 人工确认）
@@ -3878,27 +3929,32 @@ void MainWindow::onTryReconnect()
     if (m_camera.openCamera(m_config.rtspUrl)) {
         m_reconnectTimer->stop();
 
-        // 重新创建采集线程（含检测管线）
-        m_grabThread = new GrabThread(&m_camera, "HX-CCD23", this);
+        if (m_detector && m_tracker && m_reidExtractor) {
+            // 已有检测管线：复用（快速重连，不重复加载模型）
+            m_grabThread = new GrabThread(&m_camera, "HX-CCD23", this);
+            m_grabThread->setDetector(m_detector);
+            m_grabThread->setTracker(m_tracker);
+            m_grabThread->setReidExtractor(m_reidExtractor);
 
-        if (m_detector) m_grabThread->setDetector(m_detector);
-        if (m_tracker) m_grabThread->setTracker(m_tracker);
-        if (m_reidExtractor) m_grabThread->setReidExtractor(m_reidExtractor);
+            connect(m_grabThread, &GrabThread::deviceLost, this, &MainWindow::onGrabThreadDeviceLost);
+            connect(m_grabThread, &GrabThread::frameProcessed, this, &MainWindow::onFrameProcessed);
+            connect(m_grabThread, &GrabThread::frameGrabbed, this, &MainWindow::onFrameGrabbed);
+            connect(m_grabThread, &GrabThread::rawFrameGrabbed, this, [this](const cv::Mat &frame) {
+                QMutexLocker locker(&m_rawFrameMutex);
+                m_currentRawFrame = frame.clone();
+            });
 
-        connect(m_grabThread, &GrabThread::deviceLost, this, &MainWindow::onGrabThreadDeviceLost);
-        connect(m_grabThread, &GrabThread::frameProcessed, this, &MainWindow::onFrameProcessed);
-        connect(m_grabThread, &GrabThread::frameGrabbed, this, &MainWindow::onFrameGrabbed);
-        connect(m_grabThread, &GrabThread::rawFrameGrabbed, this, [this](const cv::Mat &frame) {
-            QMutexLocker locker(&m_rawFrameMutex);
-            m_currentRawFrame = frame.clone();
-        });
+            // 重置 FPS 计算
+            m_fpsTimer.restart();
+            m_fpsFrameCount = 0;
+            m_currentFps = 0.0;
 
-        // 重置 FPS 计算
-        m_fpsTimer.restart();
-        m_fpsFrameCount = 0;
-        m_currentFps = 0.0;
+            m_grabThread->start();
+        } else {
+            // 检测管线未创建（启动采集时相机不可达）：完整创建检测管线
+            startDetectionPipeline();
+        }
 
-        m_grabThread->start();
         updateCameraStatus(true);
         LOG_INFO("[MainWindow] Reconnected successfully with detection pipeline");
     } else if (m_reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {

@@ -22,13 +22,16 @@ bool CameraController::openCamera(const QString &rtspUrl)
 
     LOG_INFO(QString("Opening RTSP stream: %1").arg(rtspUrl));
 
-    // 设置 FFmpeg 读取超时：RTSP 网络中断时 m_cap.read() 会长时间阻塞，
-    // 导致采集线程卡死、画面与检测停摆（进而漏检乘客）。设置 stimeout 让
-    // read 在超时后返回 false，配合 GrabThread 的连续失败计数快速触发重连。
+    // 设置 FFmpeg 超时：RTSP 网络中断时 m_cap.read() 会长时间阻塞，
+    // 导致采集线程卡死、画面与检测停摆（进而漏检乘客）。
+    //   stimeout = RTSP 会话读超时（微秒），2s 内读不到数据即返回失败
+    //   timeout  = socket I/O 超时（微秒），限制 connect/read 阻塞，3s 快速失败
+    // 两者配合让 openCamera 在相机掉线时 3 秒内快速返回失败，配合 GrabThread
+    // 的连续失败计数快速触发重连（否则默认 30 秒超时，画面冻结半分钟）。
     // 传输方式用 TCP（本相机 RTSP 必须用 TCP 交错传输，UDP 会连接超时。
     // 实测：系统 ffmpeg -rtsp_transport tcp 能稳定拉流，udp 超时失败）。
     qputenv("OPENCV_FFMPEG_CAPTURE_OPTIONS",
-            "rtsp_transport;tcp|stimeout;5000000");
+            "rtsp_transport;tcp|stimeout;2000000|timeout;3000000");
 
     // 打开 RTSP 流（默认使用 FFmpeg 后端）。
     // 设置打开超时：相机掉线/不可达时，ffmpeg 连接会长时间阻塞；
